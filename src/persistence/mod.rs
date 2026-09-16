@@ -45,6 +45,18 @@ pub async fn create_session(
     Ok(session)
 }
 
+/// Idempotente: el transporte acepta `session_id` elegido por el cliente
+/// (el widget genera UUID v4), así que la fila puede no existir. Sin esto
+/// del primer mensaje falla por `FK` (hallazgo F5/smoke 169A-1). Defaults de
+/// `status`/`ai_enabled` aplican; no toca filas existentes.
+pub async fn ensure_session(pool: &PgPool, session_id: Uuid) -> Result<(), AgentError> {
+    sqlx::query("INSERT INTO agent_sessions (id) VALUES ($1) ON CONFLICT (id) DO NOTHING")
+        .bind(session_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 pub async fn insert_message(
     pool: &PgPool,
     session_id: Uuid,

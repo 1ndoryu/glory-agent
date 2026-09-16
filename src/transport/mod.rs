@@ -186,6 +186,9 @@ async fn process_incoming(
     let seq = state.hub.next_sequence(session_id);
 
     if let Some(pool) = &state.pool {
+        /* Sesión elegida por el cliente: se bootstrappea idempotente antes
+         * del primer mensaje (si no, FK). Ver `ensure_session`. */
+        persistence::ensure_session(pool, session_id).await?;
         let msg =
             persistence::insert_message(pool, session_id, SenderType::Client.as_str(), body, seq)
                 .await?;
