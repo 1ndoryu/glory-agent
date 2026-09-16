@@ -15,12 +15,22 @@ pub struct ChatApiOptions {
 impl ChatApiOptions {
     #[must_use]
     pub const fn standard() -> Self {
-        Self { temperature: 0.7, max_tokens: 800, top_p: 0.9, timeout_secs: 30 }
+        Self {
+            temperature: 0.7,
+            max_tokens: 800,
+            top_p: 0.9,
+            timeout_secs: 30,
+        }
     }
 
     #[must_use]
     pub const fn terse(max_tokens: u32) -> Self {
-        Self { temperature: 0.2, max_tokens, top_p: 0.8, timeout_secs: 15 }
+        Self {
+            temperature: 0.2,
+            max_tokens,
+            top_p: 0.8,
+            timeout_secs: 15,
+        }
     }
 }
 
@@ -58,7 +68,12 @@ impl Default for ProviderConfig {
 }
 
 #[must_use]
-pub fn build_chat_body(model: &str, messages: &[Value], tools: Option<&Value>, options: ChatApiOptions) -> Value {
+pub fn build_chat_body(
+    model: &str,
+    messages: &[Value],
+    tools: Option<&Value>,
+    options: ChatApiOptions,
+) -> Value {
     let mut body = serde_json::json!({
         "model": model,
         "messages": messages,
@@ -115,7 +130,10 @@ pub async fn call_provider(
         .map_err(|e| format!("AI error de red: {e}"))?;
     let status = resp.status();
     if status.is_success() {
-        let json: Value = resp.json().await.map_err(|e| format!("AI parse error: {e}"))?;
+        let json: Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("AI parse error: {e}"))?;
         tracing::info!("AI OK: modelo={}, key={key_hint}...", config.model);
         return Ok(json);
     }
@@ -131,7 +149,12 @@ mod tests {
     #[test]
     fn body_uses_model_and_limits() {
         let messages = vec![serde_json::json!({"role": "user", "content": "hola"})];
-        let body = build_chat_body("muse-spark-1.3-contribuidor", &messages, None, ChatApiOptions::standard());
+        let body = build_chat_body(
+            "muse-spark-1.3-contribuidor",
+            &messages,
+            None,
+            ChatApiOptions::standard(),
+        );
         assert_eq!(body["model"], "muse-spark-1.3-contribuidor");
         assert_eq!(body["max_tokens"], 800);
         assert_eq!(body["stream"], false);

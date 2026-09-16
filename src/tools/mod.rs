@@ -15,7 +15,11 @@ pub struct ToolDefinition {
 impl ToolDefinition {
     #[must_use]
     pub fn new(name: &str, description: &str, parameters: Value) -> Self {
-        Self { name: name.to_string(), description: description.to_string(), parameters }
+        Self {
+            name: name.to_string(),
+            description: description.to_string(),
+            parameters,
+        }
     }
 
     #[must_use]

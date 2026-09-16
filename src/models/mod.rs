@@ -74,12 +74,20 @@ pub struct WsServerMessage {
 impl WsServerMessage {
     #[must_use]
     pub fn live(message: ChatMessage) -> Self {
-        Self { r#type: "message".to_string(), message, delivery: "live".to_string() }
+        Self {
+            r#type: "message".to_string(),
+            message,
+            delivery: "live".to_string(),
+        }
     }
 
     #[must_use]
     pub fn history(message: ChatMessage) -> Self {
-        Self { r#type: "message".to_string(), message, delivery: "history".to_string() }
+        Self {
+            r#type: "message".to_string(),
+            message,
+            delivery: "history".to_string(),
+        }
     }
 }
 

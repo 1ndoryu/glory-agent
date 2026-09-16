@@ -14,7 +14,10 @@ pub fn estimate_tokens(text: &str) -> usize {
 
 #[must_use]
 pub fn estimate_messages_tokens(messages: &[Value]) -> usize {
-    messages.iter().map(|m| estimate_tokens(&m.to_string())).sum()
+    messages
+        .iter()
+        .map(|m| estimate_tokens(&m.to_string()))
+        .sum()
 }
 
 /// Recorta los mensajes más antiguos hasta caber en `max_tokens`.
@@ -72,7 +75,10 @@ mod tests {
         }
         let out = truncate_to_budget(all, 60);
         assert_eq!(out[0]["content"], "sys");
-        assert_eq!(out[out.len() - 1]["content"], "mensaje 49 con relleno xxxxxxxxxx");
+        assert_eq!(
+            out[out.len() - 1]["content"],
+            "mensaje 49 con relleno xxxxxxxxxx"
+        );
         assert!(estimate_messages_tokens(&out) <= 60);
     }
 
