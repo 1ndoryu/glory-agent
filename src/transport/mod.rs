@@ -223,11 +223,13 @@ async fn process_incoming(
         Some(state.tools.definitions())
     };
     let tools_ref = tools.as_ref();
+    let session_header = session_id.to_string();
     let resp = providers::call_provider(
         &state.provider,
         &messages,
         tools_ref,
         ChatApiOptions::standard(),
+        Some(&session_header),
         &state.http,
     )
     .await

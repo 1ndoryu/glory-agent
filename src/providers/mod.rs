@@ -1,14 +1,15 @@
-/* Providers OpenAI-compat. Primero opencode-go (muse-spark-1.3-contribuidor).
- * Patrón portado de NAKOMI/src/services/ai_providers.rs (344l): body builder +
- * un proveedor con retry simple. Sin acoplar DeepSeek/Groq/Gemini en v1. */
+/* Provider OpenCode Go para Muse Spark, vía Responses API.
+ * Evidencia (Agente/documentacion/muse-opencode-go-vscode-bucle-2026-09-03.md):
+ * - `POST /v1/chat/completions` con muse-spark → HTTP 500. Solo `/v1/responses` (200).
+ * - Sin `reasoningSummary` (400) ni `previous_response_id` (400); stateless.
+ * - `include: ["reasoning.encrypted_content"]` aceptado.
+ * Auth `Bearer <key>`. La key NUNCA se loguea (ni prefijos). */
 
 use serde_json::Value;
 
 #[derive(Clone, Copy)]
 pub struct ChatApiOptions {
-    pub temperature: f32,
-    pub max_tokens: u32,
-    pub top_p: f32,
+    pub max_output_tokens: u32,
     pub timeout_secs: u64,
 }
 
@@ -16,20 +17,16 @@ impl ChatApiOptions {
     #[must_use]
     pub const fn standard() -> Self {
         Self {
-            temperature: 0.7,
-            max_tokens: 800,
-            top_p: 0.9,
-            timeout_secs: 30,
+            max_output_tokens: 800,
+            timeout_secs: 60,
         }
     }
 
     #[must_use]
-    pub const fn terse(max_tokens: u32) -> Self {
+    pub const fn terse(max_output_tokens: u32) -> Self {
         Self {
-            temperature: 0.2,
-            max_tokens,
-            top_p: 0.8,
-            timeout_secs: 15,
+            max_output_tokens,
+            timeout_secs: 60,
         }
     }
 }
@@ -45,65 +42,134 @@ impl ProviderConfig {
     #[must_use]
     pub fn opencode_go(api_key: String) -> Self {
         Self {
-            base_url: "https://api.opencode-go.example/v1".to_string(),
+            base_url: "https://opencode.ai/zen/go/v1".to_string(),
             api_key,
-            model: "muse-spark-1.3-contribuidor".to_string(),
+            model: "muse-spark-1.3-contributor".to_string(),
         }
     }
 
     #[must_use]
-    pub fn completions_url(&self) -> String {
-        format!("{}/chat/completions", self.base_url.trim_end_matches('/'))
+    pub fn responses_url(&self) -> String {
+        format!("{}/responses", self.base_url.trim_end_matches('/'))
     }
 }
 
 impl Default for ProviderConfig {
     fn default() -> Self {
-        Self {
-            base_url: String::new(),
-            api_key: String::new(),
-            model: "muse-spark-1.3-contribuidor".to_string(),
-        }
+        Self::opencode_go(String::new())
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FunctionCall {
+    pub name: String,
+    pub arguments: String,
+    pub call_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ResponsesOutput {
+    pub text: Option<String>,
+    pub function_calls: Vec<FunctionCall>,
+}
+
+/// Convierte tools estilo chat (`{type:function, function:{...}}`) al formato
+/// Responses (`{type:function, name, description, parameters}`). Lo desconocido
+/// pasa tal cual.
 #[must_use]
-pub fn build_chat_body(
+pub fn to_responses_tools(tools: &Value) -> Value {
+    let Some(arr) = tools.as_array() else {
+        return tools.clone();
+    };
+    Value::Array(
+        arr.iter()
+            .map(|t| {
+                if let Some(f) = t.get("function") {
+                    let mut out = serde_json::json!({"type": "function"});
+                    for key in ["name", "description", "parameters"] {
+                        if let Some(v) = f.get(key) {
+                            out[key] = v.clone();
+                        }
+                    }
+                    out
+                } else {
+                    t.clone()
+                }
+            })
+            .collect(),
+    )
+}
+
+#[must_use]
+pub fn build_responses_body(
     model: &str,
-    messages: &[Value],
+    input: &[Value],
     tools: Option<&Value>,
     options: ChatApiOptions,
 ) -> Value {
     let mut body = serde_json::json!({
         "model": model,
-        "messages": messages,
-        "temperature": options.temperature,
-        "max_tokens": options.max_tokens,
-        "top_p": options.top_p,
-        "stream": false,
+        "input": input,
+        "store": false,
+        "max_output_tokens": options.max_output_tokens,
+        "include": ["reasoning.encrypted_content"],
     });
     if let Some(t) = tools {
-        body["tools"] = t.clone();
+        body["tools"] = to_responses_tools(t);
     }
     body
 }
 
-/// Extrae el texto del primer choice OpenAI-compat. `None` si vacío/inválido.
+/// Parsea `output[]`: primer `output_text` + todos los `function_call`.
+#[must_use]
+pub fn parse_responses_output(resp: &Value) -> ResponsesOutput {
+    let mut out = ResponsesOutput::default();
+    let Some(items) = resp.get("output").and_then(Value::as_array) else {
+        return out;
+    };
+    for item in items {
+        match item.get("type").and_then(Value::as_str) {
+            Some("message") if out.text.is_none() => {
+                if let Some(content) = item.get("content").and_then(Value::as_array) {
+                    for part in content {
+                        if part.get("type").and_then(Value::as_str) == Some("output_text") {
+                            if let Some(text) = part.get("text").and_then(Value::as_str) {
+                                let trimmed = text.trim();
+                                if !trimmed.is_empty() {
+                                    out.text = Some(trimmed.to_string());
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Some("function_call") => {
+                if let Some(name) = item.get("name").and_then(Value::as_str) {
+                    out.function_calls.push(FunctionCall {
+                        name: name.to_string(),
+                        arguments: item
+                            .get("arguments")
+                            .and_then(Value::as_str)
+                            .unwrap_or("{}")
+                            .to_string(),
+                        call_id: item
+                            .get("call_id")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Extrae el texto de la respuesta Responses. `None` si vacío/inválido.
 #[must_use]
 pub fn extract_first_text(resp: &Value) -> Option<String> {
-    let text = resp
-        .get("choices")?
-        .as_array()?
-        .first()?
-        .get("message")?
-        .get("content")?
-        .as_str()?;
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
+    parse_responses_output(resp).text
 }
 
 pub async fn call_provider(
@@ -111,19 +177,24 @@ pub async fn call_provider(
     messages: &[Value],
     tools: Option<&Value>,
     options: ChatApiOptions,
+    session_id: Option<&str>,
     client: &reqwest::Client,
 ) -> Result<Value, String> {
     if config.api_key.trim().is_empty() {
         return Err("AI: falta api_key (OPENCODE_GO_API_KEY)".to_string());
     }
-    let body = build_chat_body(&config.model, messages, tools, options);
-    let key_hint_len = config.api_key.len().min(8);
-    let key_hint = &config.api_key[..key_hint_len];
-    let resp = client
-        .post(config.completions_url())
+    let body = build_responses_body(&config.model, messages, tools, options);
+    // x-opencode-session: afinidad por conversación (un chat = un valor).
+    // Sin este header el relay Go responde 400 MissingSessionID.
+    let mut req = client
+        .post(config.responses_url())
         .timeout(std::time::Duration::from_secs(options.timeout_secs))
         .header("Authorization", format!("Bearer {}", config.api_key))
-        .header("Content-Type", "application/json")
+        .header("Content-Type", "application/json");
+    if let Some(sid) = session_id {
+        req = req.header("x-opencode-session", sid);
+    }
+    let resp = req
         .json(&body)
         .send()
         .await
@@ -134,47 +205,86 @@ pub async fn call_provider(
             .json()
             .await
             .map_err(|e| format!("AI parse error: {e}"))?;
-        tracing::info!("AI OK: modelo={}, key={key_hint}...", config.model);
+        tracing::info!("AI OK: modelo={}", config.model);
         return Ok(json);
     }
     let text = resp.text().await.unwrap_or_default();
-    tracing::error!("AI HTTP {status} key {key_hint}...: {text}");
-    Err(format!("AI HTTP {status}"))
+    let snippet: String = text.chars().take(300).collect();
+    tracing::error!("AI HTTP {status}: {snippet}");
+    Err(format!("AI HTTP {status}: {snippet}"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn sample_input() -> Vec<Value> {
+        vec![serde_json::json!({"role": "user", "content": "hola"})]
+    }
+
     #[test]
     fn body_uses_model_and_limits() {
-        let messages = vec![serde_json::json!({"role": "user", "content": "hola"})];
-        let body = build_chat_body(
-            "muse-spark-1.3-contribuidor",
-            &messages,
+        let body = build_responses_body(
+            "muse-spark-1.3-contributor",
+            &sample_input(),
             None,
             ChatApiOptions::standard(),
         );
-        assert_eq!(body["model"], "muse-spark-1.3-contribuidor");
-        assert_eq!(body["max_tokens"], 800);
-        assert_eq!(body["stream"], false);
+        assert_eq!(body["model"], "muse-spark-1.3-contributor");
+        assert_eq!(body["max_output_tokens"], 800);
+        assert_eq!(body["store"], false);
+        assert!(body.get("temperature").is_none());
+        assert!(body.get("messages").is_none());
     }
 
     #[test]
-    fn extract_text_rejects_empty() {
-        let empty = serde_json::json!({"choices": [{"message": {"content": "  "}}]});
-        assert!(extract_first_text(&empty).is_none());
-        let ok = serde_json::json!({"choices": [{"message": {"content": "hola"}}]});
+    fn tools_map_to_responses_shape() {
+        let chat_tools = serde_json::json!([
+            {"type": "function", "function": {"name": "crear_lead", "description": "d", "parameters": {"type": "object"}}}
+        ]);
+        let body = build_responses_body(
+            "m",
+            &sample_input(),
+            Some(&chat_tools),
+            ChatApiOptions::terse(64),
+        );
+        assert_eq!(body["tools"][0]["type"], "function");
+        assert_eq!(body["tools"][0]["name"], "crear_lead");
+        assert!(body["tools"][0].get("function").is_none());
+    }
+
+    #[test]
+    fn extract_text_from_responses_output() {
+        let ok = serde_json::json!({"output": [
+            {"type": "message", "content": [{"type": "output_text", "text": "  hola  "}]}
+        ]});
         assert_eq!(extract_first_text(&ok).as_deref(), Some("hola"));
+        let empty = serde_json::json!({"output": [
+            {"type": "message", "content": [{"type": "output_text", "text": "   "}]}
+        ]});
+        assert!(extract_first_text(&empty).is_none());
+        assert!(extract_first_text(&serde_json::json!({})).is_none());
     }
 
     #[test]
-    fn completions_url_trims_slash() {
+    fn parse_collects_function_calls() {
+        let resp = serde_json::json!({"output": [
+            {"type": "function_call", "name": "crear_lead", "arguments": "{\"a\":1}", "call_id": "c1"}
+        ]});
+        let out = parse_responses_output(&resp);
+        assert!(out.text.is_none());
+        assert_eq!(out.function_calls.len(), 1);
+        assert_eq!(out.function_calls[0].name, "crear_lead");
+        assert_eq!(out.function_calls[0].call_id.as_deref(), Some("c1"));
+    }
+
+    #[test]
+    fn responses_url_trims_slash() {
         let cfg = ProviderConfig {
             base_url: "https://x.test/v1/".to_string(),
             api_key: "k".to_string(),
             model: "m".to_string(),
         };
-        assert_eq!(cfg.completions_url(), "https://x.test/v1/chat/completions");
+        assert_eq!(cfg.responses_url(), "https://x.test/v1/responses");
     }
 }
