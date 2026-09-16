@@ -127,7 +127,7 @@ async fn handle_socket(socket: WebSocket, session_id: Uuid, state: AgentState) {
             continue;
         };
         if let WsClientMessage::Send { body } = client_msg {
-            let _ = process_incoming(&state, session_id, &body, "ws").await;
+            let _ = process_incoming(&state, session_id, &body, &session_id.to_string()).await;
         }
     }
     send_task.abort();
@@ -141,11 +141,7 @@ async fn rest_send(
         .visitor_key
         .clone()
         .unwrap_or_else(|| "anon".to_string());
-    if !state.timing.check_budget(&key) {
-        return Err(AgentError::RateLimited(
-            "demasiadas peticiones, espera un minuto".to_string(),
-        ));
-    }
+    // Sin pre-chequeo aquí: process_incoming aplica el presupuesto una sola vez.
     let reply = process_incoming(&state, input.session_id, &input.body, &key).await?;
     Ok(Json(SendResponse {
         ok: true,
@@ -193,6 +189,17 @@ async fn process_incoming(
         let msg =
             persistence::insert_message(pool, session_id, SenderType::Client.as_str(), body, seq)
                 .await?;
+        let _ = state.hub.broadcast(session_id, &WsServerMessage::live(msg));
+    } else {
+        // Sin BD: el fanout realtime sigue funcionando con mensaje efímero.
+        let msg = ChatMessage {
+            id: Uuid::new_v4(),
+            session_id,
+            sender: SenderType::Client.as_str().to_string(),
+            body: body.to_string(),
+            sequence_num: seq,
+            created_at: chrono::Utc::now(),
+        };
         let _ = state.hub.broadcast(session_id, &WsServerMessage::live(msg));
     }
 

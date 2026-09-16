@@ -22,3 +22,4 @@ futures = "0.3"
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
 axum = { version = "0.7", features = ["macros", "ws"] }
+tokio-tungstenite = { version = "0.24", features = ["connect"] }
