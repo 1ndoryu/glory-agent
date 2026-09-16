@@ -5,6 +5,7 @@
 
 ## Tareas pendientes
 
+- [x] F0 Scaffold lib (169A-1): fmt + check + clippy (`-D warnings`) + 10 unit tests PASS; Sentinel analyze 0 errors / 4 warnings (query_as runtime deliberado, ver `persistence/mod.rs`).
 - [ ] F1 Transporte: probar WS con 2 clientes + reconexión history (solo unit tests ahora).
 - [ ] F5 Integración Inmobiliaria: cablear `glory-agent` como dependencia en `MN-Inmobiliaria`, prompts/tools allí, smoke E2E con `OPENCODE_GO_API_KEY`.
 - [ ] Migración Nakomi (pendiente explícito, no empezar sin autorización).

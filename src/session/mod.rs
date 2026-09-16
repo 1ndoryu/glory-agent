@@ -34,17 +34,25 @@ impl ChatHub {
         }
     }
 
-    /// Siguiente sequence_num monotónico de la sesión (empieza en 1).
+    /// Siguiente `sequence_num` monotónico de la sesión (empieza en 1).
+    #[must_use]
     pub fn next_sequence(&self, session_id: Uuid) -> i64 {
-        let entry = self.sequences.entry(session_id).or_insert_with(|| AtomicI64::new(1));
+        let entry = self
+            .sequences
+            .entry(session_id)
+            .or_insert_with(|| AtomicI64::new(1));
         entry.fetch_add(1, Ordering::SeqCst)
     }
 
     pub fn subscribe(&self, session_id: Uuid, tx: UnboundedSender<Message>) {
-        self.sessions.entry(session_id).or_default().push(SessionEntry { tx });
+        self.sessions
+            .entry(session_id)
+            .or_default()
+            .push(SessionEntry { tx });
     }
 
     /// Retorna conexiones entregadas; purga las cerradas.
+    #[must_use]
     pub fn broadcast(&self, session_id: Uuid, msg: &WsServerMessage) -> usize {
         let Ok(json) = serde_json::to_string(msg) else {
             return 0;
@@ -70,7 +78,9 @@ impl ChatHub {
 
     #[must_use]
     pub fn connection_count(&self, session_id: Uuid) -> usize {
-        self.sessions.get(&session_id).map_or(0, |bucket| bucket.len())
+        self.sessions
+            .get(&session_id)
+            .map_or(0, |bucket| bucket.len())
     }
 }
 

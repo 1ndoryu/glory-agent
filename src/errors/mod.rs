@@ -41,8 +41,7 @@ impl IntoResponse for AgentError {
             Self::NotFound(m) => (StatusCode::NOT_FOUND, m.clone()),
             Self::RateLimited(m) => (StatusCode::TOO_MANY_REQUESTS, m.clone()),
             Self::Ai(m) => (StatusCode::BAD_GATEWAY, m.clone()),
-            Self::Db(m) => (StatusCode::INTERNAL_SERVER_ERROR, m.clone()),
-            Self::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, m.clone()),
+            Self::Db(m) | Self::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, m.clone()),
         };
         tracing::error!("glory-agent error: {self}");
         (status, Json(json!({ "ok": false, "error": msg }))).into_response()

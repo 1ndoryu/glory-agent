@@ -1,5 +1,7 @@
 /* Persistencia SQLx (PostgreSQL). SQL solo aquí, con binds (sin interpolar).
- * Se usa sqlx::query_as con FromRow para no requerir BD en compilación. */
+ * Se usa sqlx::query_as con FromRow (runtime, no el macro query_as!) a
+ * propósito: la lib debe compilar sin BD viva ni DATABASE_URL en build.
+ * El SQL se verifica contra la migración 0001 y el smoke E2E de F5. */
 
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -31,7 +33,9 @@ pub async fn insert_message(
     sequence_num: i64,
 ) -> Result<ChatMessage, AgentError> {
     if body.trim().is_empty() || body.len() > 8000 {
-        return Err(AgentError::BadRequest("mensaje vacío o >8000 chars".to_string()));
+        return Err(AgentError::BadRequest(
+            "mensaje vacío o >8000 chars".to_string(),
+        ));
     }
     let msg = sqlx::query_as::<_, ChatMessage>(
         "INSERT INTO agent_messages (session_id, sender, body, sequence_num) \
@@ -47,7 +51,11 @@ pub async fn insert_message(
     Ok(msg)
 }
 
-pub async fn list_messages(pool: &PgPool, session_id: Uuid, limit: i64) -> Result<Vec<ChatMessage>, AgentError> {
+pub async fn list_messages(
+    pool: &PgPool,
+    session_id: Uuid,
+    limit: i64,
+) -> Result<Vec<ChatMessage>, AgentError> {
     let limit = limit.clamp(1, 200);
     let rows = sqlx::query_as::<_, ChatMessage>(
         "SELECT id, session_id, sender, body, sequence_num, created_at \
@@ -60,7 +68,11 @@ pub async fn list_messages(pool: &PgPool, session_id: Uuid, limit: i64) -> Resul
     Ok(rows)
 }
 
-pub async fn enqueue_outbox(pool: &PgPool, kind: &str, payload: serde_json::Value) -> Result<OutboxEntry, AgentError> {
+pub async fn enqueue_outbox(
+    pool: &PgPool,
+    kind: &str,
+    payload: serde_json::Value,
+) -> Result<OutboxEntry, AgentError> {
     let entry = sqlx::query_as::<_, OutboxEntry>(
         "INSERT INTO agent_outbox (kind, payload) VALUES ($1, $2) \
          RETURNING id, kind, payload, status, created_at",

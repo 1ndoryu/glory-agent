@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
 
-const WINDOW: Duration = Duration::from_secs(60);
+const WINDOW: Duration = Duration::from_mins(1);
 const MAX_PER_WINDOW: u32 = 20;
 pub const MAX_CONCURRENT_AI: usize = 8;
 
@@ -32,6 +32,7 @@ impl TimingService {
     }
 
     /// `true` si la petición cabe en el presupuesto; `false` si debe rechazarse (429).
+    #[must_use]
     pub fn check_budget(&self, key: &str) -> bool {
         let now = Instant::now();
         let mut entry = self.budgets.entry(key.to_string()).or_insert(Budget {

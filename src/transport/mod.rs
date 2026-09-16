@@ -89,7 +89,11 @@ pub fn routes() -> Router<AgentState> {
         .route("/agent/history", get(rest_history))
 }
 
-async fn ws_agent(ws: WebSocketUpgrade, Query(params): Query<WsParams>, State(state): State<AgentState>) -> impl IntoResponse {
+async fn ws_agent(
+    ws: WebSocketUpgrade,
+    Query(params): Query<WsParams>,
+    State(state): State<AgentState>,
+) -> impl IntoResponse {
     ws.on_upgrade(move |socket| handle_socket(socket, params.session_id, state))
 }
 
@@ -129,13 +133,25 @@ async fn handle_socket(socket: WebSocket, session_id: Uuid, state: AgentState) {
     send_task.abort();
 }
 
-async fn rest_send(State(state): State<AgentState>, Json(input): Json<SendBody>) -> Result<Json<SendResponse>, AgentError> {
-    let key = input.visitor_key.clone().unwrap_or_else(|| "anon".to_string());
+async fn rest_send(
+    State(state): State<AgentState>,
+    Json(input): Json<SendBody>,
+) -> Result<Json<SendResponse>, AgentError> {
+    let key = input
+        .visitor_key
+        .clone()
+        .unwrap_or_else(|| "anon".to_string());
     if !state.timing.check_budget(&key) {
-        return Err(AgentError::RateLimited("demasiadas peticiones, espera un minuto".to_string()));
+        return Err(AgentError::RateLimited(
+            "demasiadas peticiones, espera un minuto".to_string(),
+        ));
     }
     let reply = process_incoming(&state, input.session_id, &input.body, &key).await?;
-    Ok(Json(SendResponse { ok: true, sequence_num: reply.0, reply: reply.1 }))
+    Ok(Json(SendResponse {
+        ok: true,
+        sequence_num: reply.0,
+        reply: reply.1,
+    }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -151,7 +167,8 @@ async fn rest_history(
     let Some(pool) = &state.pool else {
         return Ok(Json(vec![]));
     };
-    let msgs = persistence::list_messages(pool, params.session_id, params.limit.unwrap_or(50)).await?;
+    let msgs =
+        persistence::list_messages(pool, params.session_id, params.limit.unwrap_or(50)).await?;
     Ok(Json(msgs))
 }
 
@@ -163,7 +180,9 @@ async fn process_incoming(
     budget_key: &str,
 ) -> Result<(i64, Option<String>), AgentError> {
     if body.trim().is_empty() || body.len() > 8000 {
-        return Err(AgentError::BadRequest("mensaje vacío o >8000 chars".to_string()));
+        return Err(AgentError::BadRequest(
+            "mensaje vacío o >8000 chars".to_string(),
+        ));
     }
     if !state.timing.check_budget(budget_key) {
         return Err(AgentError::RateLimited("demasiadas peticiones".to_string()));
@@ -171,15 +190,17 @@ async fn process_incoming(
     let seq = state.hub.next_sequence(session_id);
 
     if let Some(pool) = &state.pool {
-        let msg = persistence::insert_message(pool, session_id, SenderType::Client.as_str(), body, seq).await?;
-        state.hub.broadcast(session_id, &WsServerMessage::live(msg));
+        let msg =
+            persistence::insert_message(pool, session_id, SenderType::Client.as_str(), body, seq)
+                .await?;
+        let _ = state.hub.broadcast(session_id, &WsServerMessage::live(msg));
     }
 
     if state.provider.api_key.trim().is_empty() {
         return Ok((seq, None));
     }
 
-    let _permit = state
+    state
         .timing
         .ai_permits_available()
         .checked_sub(1)
@@ -189,17 +210,30 @@ async fn process_incoming(
     let system = state.prompts.build_system_prompt();
     let history = vec![serde_json::json!({"role": "user", "content": body})];
     let messages = context::build_messages(&system, None, history);
-    let tools = if state.tools.is_empty() { None } else { Some(state.tools.definitions()) };
+    let tools = if state.tools.is_empty() {
+        None
+    } else {
+        Some(state.tools.definitions())
+    };
     let tools_ref = tools.as_ref();
-    let resp = providers::call_provider(&state.provider, &messages, tools_ref, ChatApiOptions::standard(), &state.http)
-        .await
-        .map_err(AgentError::Ai)?;
+    let resp = providers::call_provider(
+        &state.provider,
+        &messages,
+        tools_ref,
+        ChatApiOptions::standard(),
+        &state.http,
+    )
+    .await
+    .map_err(AgentError::Ai)?;
     let reply = providers::extract_first_text(&resp);
 
     if let (Some(pool), Some(text)) = (&state.pool, reply.clone()) {
         let ai_seq = state.hub.next_sequence(session_id);
-        if let Ok(msg) = persistence::insert_message(pool, session_id, SenderType::Ai.as_str(), &text, ai_seq).await {
-            state.hub.broadcast(session_id, &WsServerMessage::live(msg));
+        if let Ok(msg) =
+            persistence::insert_message(pool, session_id, SenderType::Ai.as_str(), &text, ai_seq)
+                .await
+        {
+            let _ = state.hub.broadcast(session_id, &WsServerMessage::live(msg));
         }
     }
     Ok((seq, reply))
