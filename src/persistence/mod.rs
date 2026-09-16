@@ -104,6 +104,16 @@ pub async fn enqueue_outbox(
     Ok(entry)
 }
 
+/// Borra una sesión de prueba. CASCADE elimina mensajes y ciclo.
+/// Retorna filas afectadas (0 = no existía).
+pub async fn delete_session(pool: &PgPool, session_id: Uuid) -> Result<u64, AgentError> {
+    let r = sqlx::query("DELETE FROM agent_sessions WHERE id = $1")
+        .bind(session_id)
+        .execute(pool)
+        .await?;
+    Ok(r.rows_affected())
+}
+
 /// Toma humana: crea o actualiza el ciclo de respuesta de la sesión.
 /// `escalated` = un humano tomó el hilo; la IA deja de responder.
 pub async fn upsert_response_cycle(
