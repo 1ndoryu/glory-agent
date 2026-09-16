@@ -63,6 +63,16 @@ pub struct OutboxEntry {
     pub created_at: DateTime<Utc>,
 }
 
+/// [169A-3] Fila de `agent_config`: el admin edita `prompt_extra`,
+/// teléfonos o el kill-switch sin redeploy. El núcleo define las claves
+/// que lee (`prompt_extra`, `ai_enabled_global`); cada producto, las suyas.
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct AgentConfig {
+    pub key: String,
+    pub value: String,
+    pub updated_at: DateTime<Utc>,
+}
+
 /// Mensaje servidor→cliente por WS. `delivery`: live (nuevo) o history (reconexión).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WsServerMessage {

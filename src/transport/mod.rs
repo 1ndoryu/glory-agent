@@ -25,7 +25,7 @@ use crate::{
     providers::{self, ChatApiOptions, ProviderConfig},
     session::ChatHub,
     timing::TimingService,
-    tools::ToolRegistry,
+    tools::{ToolCtx, ToolExecutor, ToolRegistry, MAX_TOOL_ITERATIONS},
 };
 
 #[derive(Clone)]
@@ -35,6 +35,7 @@ pub struct AgentState {
     pub prompts: PromptConfig,
     pub timing: TimingService,
     pub tools: Arc<ToolRegistry>,
+    pub executor: Option<Arc<dyn ToolExecutor>>,
     pub http: reqwest::Client,
     pub pool: Option<sqlx::PgPool>,
 }
@@ -48,6 +49,7 @@ impl AgentState {
             prompts,
             timing: TimingService::new(),
             tools: Arc::new(ToolRegistry::new()),
+            executor: None,
             http: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
                 .build()
@@ -59,6 +61,23 @@ impl AgentState {
     #[must_use]
     pub fn with_pool(mut self, pool: sqlx::PgPool) -> Self {
         self.pool = Some(pool);
+        self
+    }
+
+    /* [169A-3] Hub compartido: el producto crea un `ChatHub` y lo pasa al
+     * router visitante y a sus rutas staff, así el humano responde por el
+     * mismo WS que escucha el visitante (`Clone` comparte suscriptores). */
+    #[must_use]
+    pub fn with_hub(mut self, hub: ChatHub) -> Self {
+        self.hub = hub;
+        self
+    }
+
+    /// Executor de tools del producto. Sin executor, los `function_call`
+    /// del modelo se ignoran y se responde solo con el texto (degradado).
+    #[must_use]
+    pub fn with_executor(mut self, executor: Arc<dyn ToolExecutor>) -> Self {
+        self.executor = Some(executor);
         self
     }
 }
@@ -168,7 +187,82 @@ async fn rest_history(
     Ok(Json(msgs))
 }
 
-/// Guarda + llama IA (si hay key) + broadcast. Retorna (sequence, respuesta IA).
+/* [169A-3] Gate de toma humana (antes no existía: `should_answer_with_ai`
+ * estaba definida pero nadie la llamaba). `false` = el mensaje igual
+ * persiste y se reenvía, pero la IA no responde: kill-switch global,
+ * `ai_enabled` de la sesión o ciclo `escalated`. */
+async fn ai_may_respond(pool: &sqlx::PgPool, session_id: Uuid) -> Result<bool, AgentError> {
+    let global_off = persistence::get_config(pool, "ai_enabled_global")
+        .await
+        .is_ok_and(|v| v.as_deref() == Some("off"));
+    if global_off {
+        return Ok(false);
+    }
+    let session = persistence::get_session(pool, session_id).await?;
+    if session.as_ref().is_some_and(|s| !s.ai_enabled) {
+        return Ok(false);
+    }
+    persistence::should_answer_with_ai(pool, session_id).await
+}
+
+/* [169A-3] Una vuelta provider→tools: llama al provider, ejecuta los
+ * `function_call` registrados y anexa sus salidas a `messages`.
+ * Retorna (texto, proseguir): `false` cuando no quedan calls pendientes
+ * o no hay executor (comportamiento v1). */
+async fn provider_turn(
+    state: &AgentState,
+    session_id: Uuid,
+    messages: &mut Vec<serde_json::Value>,
+    tools_ref: Option<&serde_json::Value>,
+    session_header: &str,
+) -> Result<(Option<String>, bool), AgentError> {
+    let resp = providers::call_provider(
+        &state.provider,
+        messages,
+        tools_ref,
+        ChatApiOptions::standard(),
+        Some(session_header),
+        &state.http,
+    )
+    .await
+    .map_err(AgentError::Ai)?;
+    let out = providers::parse_responses_output(&resp);
+    let Some(executor) = &state.executor else {
+        return Ok((out.text, false));
+    };
+    let pending: Vec<_> = out
+        .function_calls
+        .into_iter()
+        .filter(|c| state.tools.contains(&c.name))
+        .collect();
+    if pending.is_empty() {
+        return Ok((out.text, false));
+    }
+    let ctx = ToolCtx::new(session_id, state.pool.clone());
+    for call in pending {
+        let args: serde_json::Value =
+            serde_json::from_str(&call.arguments).unwrap_or(serde_json::json!({}));
+        let output = executor
+            .execute(&call.name, &args, &ctx)
+            .await
+            .unwrap_or_else(|e| serde_json::json!({"error": e.to_string()}));
+        let output_str = serde_json::to_string(&output).unwrap_or_else(|_| "{}".to_string());
+        let mut item = serde_json::Map::new();
+        item.insert(
+            "type".to_string(),
+            serde_json::Value::String("function_call_output".to_string()),
+        );
+        if let Some(call_id) = call.call_id {
+            item.insert("call_id".to_string(), serde_json::Value::String(call_id));
+        }
+        item.insert("output".to_string(), serde_json::Value::String(output_str));
+        messages.push(serde_json::Value::Object(item));
+    }
+    Ok((out.text, true))
+}
+
+/// Guarda + gate humano + llama IA (si hay key y la IA puede responder) +
+/// loop de tools + broadcast. Retorna (sequence, respuesta IA).
 async fn process_incoming(
     state: &AgentState,
     session_id: Uuid,
@@ -210,6 +304,13 @@ async fn process_incoming(
         return Ok((seq, None));
     }
 
+    /* Gate 169A-3: humano al mando → persiste y reenvía, sin `reply`. */
+    if let Some(pool) = &state.pool {
+        if !ai_may_respond(pool, session_id).await? {
+            return Ok((seq, None));
+        }
+    }
+
     state
         .timing
         .ai_permits_available()
@@ -217,9 +318,18 @@ async fn process_incoming(
         .ok_or_else(|| AgentError::RateLimited("IA saturada, reintenta".to_string()))
         .map(|_| ())?;
 
-    let system = state.prompts.build_system_prompt();
+    let mut system = state.prompts.build_system_prompt();
+    if let Some(pool) = &state.pool {
+        if let Ok(Some(extra)) = persistence::get_config(pool, "prompt_extra").await {
+            let extra = extra.trim();
+            if !extra.is_empty() {
+                system.push_str("\n\nAjustes del administrador (prevalecen):\n");
+                system.push_str(&extra.chars().take(2000).collect::<String>());
+            }
+        }
+    }
     let history = vec![serde_json::json!({"role": "user", "content": body})];
-    let messages = context::build_messages(&system, None, history);
+    let mut messages = context::build_messages(&system, None, history);
     let tools = if state.tools.is_empty() {
         None
     } else {
@@ -227,17 +337,17 @@ async fn process_incoming(
     };
     let tools_ref = tools.as_ref();
     let session_header = session_id.to_string();
-    let resp = providers::call_provider(
-        &state.provider,
-        &messages,
-        tools_ref,
-        ChatApiOptions::standard(),
-        Some(&session_header),
-        &state.http,
-    )
-    .await
-    .map_err(AgentError::Ai)?;
-    let reply = providers::extract_first_text(&resp);
+
+    /* Loop F6: provider→tools→provider hasta agotar calls o iteraciones. */
+    let mut reply: Option<String> = None;
+    for _ in 0..=MAX_TOOL_ITERATIONS {
+        let (text, proseguir) =
+            provider_turn(state, session_id, &mut messages, tools_ref, &session_header).await?;
+        reply = text;
+        if !proseguir {
+            break;
+        }
+    }
 
     if let (Some(pool), Some(text)) = (&state.pool, reply.clone()) {
         let ai_seq = state.hub.next_sequence(session_id);
