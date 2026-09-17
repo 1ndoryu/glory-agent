@@ -205,6 +205,37 @@ async fn ai_may_respond(pool: &sqlx::PgPool, session_id: Uuid) -> Result<bool, A
     persistence::should_answer_with_ai(pool, session_id).await
 }
 
+/* Reinyecta en `messages` los items `function_call` conocidos tal cual los
+ * devolvió el modelo, ANTES de sus `function_call_output`. El Responses API
+ * enlaza cada salida con su llamada por `call_id`: sin el item original en
+ * el `input` responde 400 `No function call found for function call output`.
+ * Solo se reinyectan llamadas registradas (las desconocidas se descartan,
+ * igual que al filtrar `pending`). Retorna cuántos items anexó. */
+#[must_use]
+pub fn inyectar_llamadas(
+    messages: &mut Vec<serde_json::Value>,
+    resp: &serde_json::Value,
+    tools: &ToolRegistry,
+) -> usize {
+    let Some(items) = resp.get("output").and_then(serde_json::Value::as_array) else {
+        return 0;
+    };
+    let mut n = 0;
+    for item in items {
+        let es_llamada =
+            item.get("type").and_then(serde_json::Value::as_str) == Some("function_call");
+        let conocida = item
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|nombre| tools.contains(nombre));
+        if es_llamada && conocida {
+            messages.push(item.clone());
+            n += 1;
+        }
+    }
+    n
+}
+
 /* [169A-3] Una vuelta provider→tools: llama al provider, ejecuta los
  * `function_call` registrados y anexa sus salidas a `messages`.
  * Retorna (texto, proseguir): `false` cuando no quedan calls pendientes
@@ -238,6 +269,9 @@ async fn provider_turn(
     if pending.is_empty() {
         return Ok((out.text, false));
     }
+    /* El input del siguiente turno debe traer cada `function_call` antes de
+     * su `function_call_output` (si no, el provider 400 por `call_id`). */
+    let _ = inyectar_llamadas(messages, &resp, &state.tools);
     let ctx = ToolCtx::new(session_id, state.pool.clone());
     for call in pending {
         let args: serde_json::Value =
@@ -359,4 +393,60 @@ async fn process_incoming(
         }
     }
     Ok((seq, reply))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tools::ToolDefinition;
+
+    fn registro_con(nombre: &str) -> ToolRegistry {
+        let mut r = ToolRegistry::new();
+        r.register(ToolDefinition::new(
+            nombre,
+            "d",
+            serde_json::json!({"type": "object"}),
+        ));
+        r
+    }
+
+    #[test]
+    fn inyecta_llamada_conocida_antes_de_su_salida() {
+        let tools = registro_con("buscar_inmuebles");
+        let resp = serde_json::json!({"output": [
+            {"type": "message", "content": []},
+            {"type": "function_call", "name": "buscar_inmuebles",
+             "arguments": "{}", "call_id": "call_1"},
+        ]});
+        let mut messages = vec![serde_json::json!({"role": "user"})];
+        assert_eq!(inyectar_llamadas(&mut messages, &resp, &tools), 1);
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[1]["type"], "function_call");
+        assert_eq!(messages[1]["call_id"], "call_1");
+    }
+
+    #[test]
+    fn ignora_llamada_desconocida_y_otros_tipos() {
+        let tools = registro_con("buscar_inmuebles");
+        let resp = serde_json::json!({"output": [
+            {"type": "function_call", "name": "otra_tool",
+             "arguments": "{}", "call_id": "call_x"},
+            {"type": "message", "content": []},
+            {"type": "reasoning", "summary": []},
+        ]});
+        let mut messages = vec![];
+        assert_eq!(inyectar_llamadas(&mut messages, &resp, &tools), 0);
+        assert!(messages.is_empty());
+    }
+
+    #[test]
+    fn sin_output_no_anexa_nada() {
+        let tools = registro_con("buscar_inmuebles");
+        let mut messages = vec![];
+        assert_eq!(
+            inyectar_llamadas(&mut messages, &serde_json::json!({}), &tools),
+            0
+        );
+        assert!(messages.is_empty());
+    }
 }
