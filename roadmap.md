@@ -35,6 +35,12 @@
   con instancia `C:\tmp\pg-glory-agent:5433`). Commit `71eeff8`:
   `sentinel analyze` 0E/0W/0I/0H; fmt + clippy `--all-targets` limpios;
   19 unit + 5 integración + `db_roundtrip -- --ignored` PASS contra PG viva.
+- [x] F8 Gate completo (2026-09-23): `sentinel.config.json` con las 4
+  recomendadas (`directoryExceptions`, `portableBoundaries`, `rules`, `runtime`
+  anidadas en `analyzers.sentinel.config`, patrón coolify) +
+  `varsense.config.json` (precedente GLORYPORT, Rust) + `.gitignore` para
+  `.quality-reports/`/`.sentinel/`. Diagnóstico de consola `[]`,
+  `varsense:true`; doctor `readyForGate:true`; analyze 0/0/0/0.
 - [ ] Migración Nakomi (pendiente explícito, no empezar sin autorización).
 
 ## Notas
