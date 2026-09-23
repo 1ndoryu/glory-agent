@@ -2,7 +2,7 @@
   "schemaVersion": 2,
   "mode": "enforce",
   "project": {
-    "primaryBranch": "master"
+    "primaryBranch": "main"
   },
   "guard": {
     "directCommands": {
