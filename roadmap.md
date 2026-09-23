@@ -5,7 +5,7 @@
 
 ## Tareas pendientes
 
-- [x] F0 Scaffold lib (169A-1): fmt + check + clippy (`-D warnings`) + 10 unit tests PASS; Sentinel analyze 0 errors / 4 warnings (query_as runtime deliberado, ver `persistence/mod.rs`).
+- [x] F0 Scaffold lib (169A-1): fmt + check + clippy (`-D warnings`) + 10 unit tests PASS; Sentinel analyze 0 violaciones (F7 eliminó los warnings `sqlx-*-sin-macro`).
 - [x] F1 Transporte (169A-2): 5 tests integración (`tests/ws_roundtrip.rs`) — fanout 2 clientes, aislamiento por sesión, REST sequence sin IA, history vacío sin pool, 429 sobre presupuesto. Total 15 tests PASS; clippy limpio; Sentinel 0 errors.
 - [x] F2 Provider E2E (169A-3): Responses API (`/responses`; chat/completions → 500), header `x-opencode-session` = session_id (sin él → 400 MissingSessionID), modelo `muse-spark-1.3-contributor`. E2E real PASS (`reply: OK`, 3.55s). Total 18 tests PASS + 1 E2E; clippy limpio; Sentinel 0 errors.
 - [x] F3 Contexto 30k: truncado + `ai_summary` + system compacto, con unit tests. Verificado en suites F0-F2.
@@ -27,6 +27,14 @@
   `get/list/set_session_*`, `get/set_config` + `migrations/0002_config.sql`.
   16 unit + suites verdes; clippy limpio. Falta E2E vivo contra PG
   (requiere instancia 5433; unit cubre executor con fake).
+- [x] F7 Macros SQLx offline (2026-09-23): `persistence/mod.rs` migrado de
+  `query_as`/`query` runtime a `query_as!`/`query!` (17 sitios; el SQL era
+  estático y convertible; el plan original ya pedía `query_as!`). Caché
+  `.sqlx/` (17 queries) + `.cargo/config.toml` (`SQLX_OFFLINE=true`): el
+  build compila sin BD viva ni `DATABASE_URL` (`cargo sqlx prepare` regenera
+  con instancia `C:\tmp\pg-glory-agent:5433`). Commit `71eeff8`:
+  `sentinel analyze` 0E/0W/0I/0H; fmt + clippy `--all-targets` limpios;
+  19 unit + 5 integración + `db_roundtrip -- --ignored` PASS contra PG viva.
 - [ ] Migración Nakomi (pendiente explícito, no empezar sin autorización).
 
 ## Notas
