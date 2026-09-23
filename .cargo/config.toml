@@ -1,0 +1,6 @@
+# SQLx offline: los macros query!/query_as! usan el caché `.sqlx/`
+# (generado con `cargo sqlx prepare` + BD local) en vez de exigir
+# DATABASE_URL en compilación. Quien exporte DATABASE_URL obtiene
+# verificación live; el resto compila offline. Ver src/persistence/mod.rs.
+[env]
+SQLX_OFFLINE = "true"

@@ -1,7 +1,8 @@
 /* Persistencia SQLx (PostgreSQL). SQL solo aquí, con binds (sin interpolar).
- * Se usa sqlx::query_as con FromRow (runtime, no el macro query_as!) a
- * propósito: la lib debe compilar sin BD viva ni DATABASE_URL en build.
- * El SQL se verifica contra la migración 0001 y el smoke E2E de F5. */
+ * Se usan los macros query!/query_as! (verificación en compilación) con caché
+ * offline `.sqlx/` (`SQLX_OFFLINE=true` en `.cargo/config.toml`): el build no
+ * necesita BD viva; `cargo sqlx prepare` regenera el caché con BD local.
+ * El SQL se verifica contra las migraciones y el smoke E2E de F5. */
 
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -40,12 +41,13 @@ pub async fn create_session(
     visitor_name: Option<&str>,
     contact: Option<&str>,
 ) -> Result<ChatSession, AgentError> {
-    let session = sqlx::query_as::<_, ChatSession>(
+    let session = sqlx::query_as!(
+        ChatSession,
         "INSERT INTO agent_sessions (visitor_name, contact) VALUES ($1, $2) \
          RETURNING id, visitor_name, contact, status, ai_enabled, created_at, updated_at",
+        visitor_name,
+        contact
     )
-    .bind(visitor_name)
-    .bind(contact)
     .fetch_one(pool)
     .await?;
     Ok(session)
@@ -56,10 +58,12 @@ pub async fn create_session(
 /// del primer mensaje falla por `FK` (hallazgo F5/smoke 169A-1). Defaults de
 /// `status`/`ai_enabled` aplican; no toca filas existentes.
 pub async fn ensure_session(pool: &PgPool, session_id: Uuid) -> Result<(), AgentError> {
-    sqlx::query("INSERT INTO agent_sessions (id) VALUES ($1) ON CONFLICT (id) DO NOTHING")
-        .bind(session_id)
-        .execute(pool)
-        .await?;
+    sqlx::query!(
+        "INSERT INTO agent_sessions (id) VALUES ($1) ON CONFLICT (id) DO NOTHING",
+        session_id
+    )
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -75,15 +79,16 @@ pub async fn insert_message(
             "mensaje vacío o >8000 chars".to_string(),
         ));
     }
-    let msg = sqlx::query_as::<_, ChatMessage>(
+    let msg = sqlx::query_as!(
+        ChatMessage,
         "INSERT INTO agent_messages (session_id, sender, body, sequence_num) \
          VALUES ($1, $2, $3, $4) \
          RETURNING id, session_id, sender, body, sequence_num, created_at",
+        session_id,
+        sender,
+        body,
+        sequence_num
     )
-    .bind(session_id)
-    .bind(sender)
-    .bind(body)
-    .bind(sequence_num)
     .fetch_one(pool)
     .await?;
     Ok(msg)
@@ -95,12 +100,13 @@ pub async fn list_messages(
     limit: i64,
 ) -> Result<Vec<ChatMessage>, AgentError> {
     let limit = limit.clamp(1, 200);
-    let rows = sqlx::query_as::<_, ChatMessage>(
+    let rows = sqlx::query_as!(
+        ChatMessage,
         "SELECT id, session_id, sender, body, sequence_num, created_at \
          FROM agent_messages WHERE session_id = $1 ORDER BY sequence_num DESC LIMIT $2",
+        session_id,
+        limit
     )
-    .bind(session_id)
-    .bind(limit)
     .fetch_all(pool)
     .await?;
     Ok(rows)
@@ -111,12 +117,13 @@ pub async fn enqueue_outbox(
     kind: &str,
     payload: serde_json::Value,
 ) -> Result<OutboxEntry, AgentError> {
-    let entry = sqlx::query_as::<_, OutboxEntry>(
+    let entry = sqlx::query_as!(
+        OutboxEntry,
         "INSERT INTO agent_outbox (kind, payload) VALUES ($1, $2) \
          RETURNING id, kind, payload, status, created_at",
+        kind,
+        payload
     )
-    .bind(kind)
-    .bind(payload)
     .fetch_one(pool)
     .await?;
     Ok(entry)
@@ -125,8 +132,7 @@ pub async fn enqueue_outbox(
 /// Borra una sesión de prueba. CASCADE elimina mensajes y ciclo.
 /// Retorna filas afectadas (0 = no existía).
 pub async fn delete_session(pool: &PgPool, session_id: Uuid) -> Result<u64, AgentError> {
-    let r = sqlx::query("DELETE FROM agent_sessions WHERE id = $1")
-        .bind(session_id)
+    let r = sqlx::query!("DELETE FROM agent_sessions WHERE id = $1", session_id)
         .execute(pool)
         .await?;
     Ok(r.rows_affected())
@@ -140,11 +146,12 @@ pub async fn get_session(
     pool: &PgPool,
     session_id: Uuid,
 ) -> Result<Option<ChatSession>, AgentError> {
-    let row = sqlx::query_as::<_, ChatSession>(
+    let row = sqlx::query_as!(
+        ChatSession,
         "SELECT id, visitor_name, contact, status, ai_enabled, created_at, updated_at \
          FROM agent_sessions WHERE id = $1",
+        session_id
     )
-    .bind(session_id)
     .fetch_optional(pool)
     .await?;
     Ok(row)
@@ -164,13 +171,14 @@ pub async fn list_sessions(
         }
     }
     let limit = limit.clamp(1, 200);
-    let rows = sqlx::query_as::<_, ChatSession>(
+    let rows = sqlx::query_as!(
+        ChatSession,
         "SELECT id, visitor_name, contact, status, ai_enabled, created_at, updated_at \
          FROM agent_sessions WHERE ($1::TEXT IS NULL OR status = $1) \
          ORDER BY updated_at DESC LIMIT $2",
+        status,
+        limit
     )
-    .bind(status)
-    .bind(limit)
     .fetch_all(pool)
     .await?;
     Ok(rows)
@@ -186,12 +194,13 @@ pub async fn set_session_status(
             "session status debe ser open|escalated|closed".to_string(),
         ));
     }
-    let row = sqlx::query_as::<_, ChatSession>(
+    let row = sqlx::query_as!(
+        ChatSession,
         "UPDATE agent_sessions SET status = $2, updated_at = now() WHERE id = $1 \
          RETURNING id, visitor_name, contact, status, ai_enabled, created_at, updated_at",
+        session_id,
+        status
     )
-    .bind(session_id)
-    .bind(status)
     .fetch_one(pool)
     .await?;
     Ok(row)
@@ -207,14 +216,15 @@ pub async fn set_session_contact(
 ) -> Result<ChatSession, AgentError> {
     let name = visitor_name.map(str::trim).filter(|s| !s.is_empty());
     let contact = contact.map(str::trim).filter(|s| !s.is_empty());
-    let row = sqlx::query_as::<_, ChatSession>(
+    let row = sqlx::query_as!(
+        ChatSession,
         "UPDATE agent_sessions SET visitor_name = COALESCE($2, visitor_name), \
          contact = COALESCE($3, contact), updated_at = now() WHERE id = $1 \
          RETURNING id, visitor_name, contact, status, ai_enabled, created_at, updated_at",
+        session_id,
+        name,
+        contact
     )
-    .bind(session_id)
-    .bind(name)
-    .bind(contact)
     .fetch_one(pool)
     .await?;
     Ok(row)
@@ -226,12 +236,13 @@ pub async fn set_session_ai(
     session_id: Uuid,
     enabled: bool,
 ) -> Result<ChatSession, AgentError> {
-    let row = sqlx::query_as::<_, ChatSession>(
+    let row = sqlx::query_as!(
+        ChatSession,
         "UPDATE agent_sessions SET ai_enabled = $2, updated_at = now() WHERE id = $1 \
          RETURNING id, visitor_name, contact, status, ai_enabled, created_at, updated_at",
+        session_id,
+        enabled
     )
-    .bind(session_id)
-    .bind(enabled)
     .fetch_one(pool)
     .await?;
     Ok(row)
@@ -239,11 +250,10 @@ pub async fn set_session_ai(
 
 /// Lee una clave de `agent_config`. `None` = no definida (aplica default).
 pub async fn get_config(pool: &PgPool, key: &str) -> Result<Option<String>, AgentError> {
-    let row: Option<(String,)> = sqlx::query_as("SELECT value FROM agent_config WHERE key = $1")
-        .bind(key)
+    let row = sqlx::query!("SELECT value FROM agent_config WHERE key = $1", key)
         .fetch_optional(pool)
         .await?;
-    Ok(row.map(|r| r.0))
+    Ok(row.map(|r| r.value))
 }
 
 /// Crea o actualiza una clave (`key` 1..64 chars, `value` <= 8000).
@@ -253,13 +263,14 @@ pub async fn set_config(pool: &PgPool, key: &str, value: &str) -> Result<AgentCo
             "config key 1..64 chars, value <= 8000".to_string(),
         ));
     }
-    let row = sqlx::query_as::<_, AgentConfig>(
+    let row = sqlx::query_as!(
+        AgentConfig,
         "INSERT INTO agent_config (key, value) VALUES ($1, $2) \
          ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now() \
          RETURNING key, value, updated_at",
+        key.trim(),
+        value
     )
-    .bind(key.trim())
-    .bind(value)
     .fetch_one(pool)
     .await?;
     Ok(row)
@@ -277,13 +288,14 @@ pub async fn upsert_response_cycle(
             "cycle status debe ser waiting|answered|escalated".to_string(),
         ));
     }
-    let cycle = sqlx::query_as::<_, ResponseCycle>(
+    let cycle = sqlx::query_as!(
+        ResponseCycle,
         "INSERT INTO agent_response_cycles (session_id, status) VALUES ($1, $2) \
          ON CONFLICT (session_id) DO UPDATE SET status = EXCLUDED.status \
          RETURNING session_id, status, created_at",
+        session_id,
+        status
     )
-    .bind(session_id)
-    .bind(status)
     .fetch_one(pool)
     .await?;
     Ok(cycle)
@@ -293,11 +305,12 @@ pub async fn get_response_cycle(
     pool: &PgPool,
     session_id: Uuid,
 ) -> Result<Option<ResponseCycle>, AgentError> {
-    let cycle = sqlx::query_as::<_, ResponseCycle>(
+    let cycle = sqlx::query_as!(
+        ResponseCycle,
         "SELECT session_id, status, created_at \
          FROM agent_response_cycles WHERE session_id = $1",
+        session_id
     )
-    .bind(session_id)
     .fetch_optional(pool)
     .await?;
     Ok(cycle)
@@ -315,11 +328,12 @@ pub async fn fetch_pending_outbox(
     limit: i64,
 ) -> Result<Vec<OutboxEntry>, AgentError> {
     let limit = limit.clamp(1, 100);
-    let rows = sqlx::query_as::<_, OutboxEntry>(
+    let rows = sqlx::query_as!(
+        OutboxEntry,
         "SELECT id, kind, payload, status, created_at \
          FROM agent_outbox WHERE status = 'pending' ORDER BY created_at ASC LIMIT $1",
+        limit
     )
-    .bind(limit)
     .fetch_all(pool)
     .await?;
     Ok(rows)
@@ -331,12 +345,13 @@ pub async fn mark_outbox(pool: &PgPool, id: Uuid, status: &str) -> Result<Outbox
             "outbox status debe ser pending|sent|failed".to_string(),
         ));
     }
-    let entry = sqlx::query_as::<_, OutboxEntry>(
+    let entry = sqlx::query_as!(
+        OutboxEntry,
         "UPDATE agent_outbox SET status = $2 WHERE id = $1 \
          RETURNING id, kind, payload, status, created_at",
+        id,
+        status
     )
-    .bind(id)
-    .bind(status)
     .fetch_one(pool)
     .await?;
     Ok(entry)
