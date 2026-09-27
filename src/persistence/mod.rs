@@ -74,6 +74,20 @@ pub async fn insert_message(
     body: &str,
     sequence_num: i64,
 ) -> Result<ChatMessage, AgentError> {
+    insert_message_with_usage(pool, session_id, sender, body, sequence_num, None, None).await
+}
+
+/// Inserta con usage exacto del turno (F0: solo mensajes `ai`; el resto
+/// pasa `None` y cada producto estima). Compat: `insert_message` delega.
+pub async fn insert_message_with_usage(
+    pool: &PgPool,
+    session_id: Uuid,
+    sender: &str,
+    body: &str,
+    sequence_num: i64,
+    input_tokens: Option<i32>,
+    output_tokens: Option<i32>,
+) -> Result<ChatMessage, AgentError> {
     if body.trim().is_empty() || body.len() > 8000 {
         return Err(AgentError::BadRequest(
             "mensaje vacío o >8000 chars".to_string(),
@@ -81,13 +95,15 @@ pub async fn insert_message(
     }
     let msg = sqlx::query_as!(
         ChatMessage,
-        "INSERT INTO agent_messages (session_id, sender, body, sequence_num) \
-         VALUES ($1, $2, $3, $4) \
-         RETURNING id, session_id, sender, body, sequence_num, created_at",
+        "INSERT INTO agent_messages (session_id, sender, body, sequence_num, input_tokens, output_tokens) \
+         VALUES ($1, $2, $3, $4, $5, $6) \
+         RETURNING id, session_id, sender, body, sequence_num, input_tokens, output_tokens, created_at",
         session_id,
         sender,
         body,
-        sequence_num
+        sequence_num,
+        input_tokens,
+        output_tokens
     )
     .fetch_one(pool)
     .await?;
@@ -102,7 +118,7 @@ pub async fn list_messages(
     let limit = limit.clamp(1, 200);
     let rows = sqlx::query_as!(
         ChatMessage,
-        "SELECT id, session_id, sender, body, sequence_num, created_at \
+        "SELECT id, session_id, sender, body, sequence_num, input_tokens, output_tokens, created_at \
          FROM agent_messages WHERE session_id = $1 ORDER BY sequence_num DESC LIMIT $2",
         session_id,
         limit

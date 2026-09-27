@@ -44,6 +44,10 @@ pub struct ChatMessage {
     pub sender: String,
     pub body: String,
     pub sequence_num: i64,
+    /* [F0] Usage exacto del turno (Responses `usage`): solo en mensajes
+     * `ai`; NULL en filas viejas y mensajes no-IA (cada producto estima). */
+    pub input_tokens: Option<i32>,
+    pub output_tokens: Option<i32>,
     pub created_at: DateTime<Utc>,
 }
 

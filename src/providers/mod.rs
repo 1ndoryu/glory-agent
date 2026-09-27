@@ -67,10 +67,45 @@ pub struct FunctionCall {
     pub call_id: Option<String>,
 }
 
+/* [F0] Usage del turno (Responses `usage`): suma por llamada cuando el
+ * loop de tools hace varias. Ausente en respuestas viejas/fakes → None. */
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TurnUsage {
+    pub input_tokens: i32,
+    pub output_tokens: i32,
+}
+
+impl TurnUsage {
+    #[must_use]
+    pub fn saturating_add(self, other: Self) -> Self {
+        Self {
+            input_tokens: self.input_tokens.saturating_add(other.input_tokens),
+            output_tokens: self.output_tokens.saturating_add(other.output_tokens),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ResponsesOutput {
     pub text: Option<String>,
     pub function_calls: Vec<FunctionCall>,
+    pub usage: Option<TurnUsage>,
+}
+
+/// Lee `resp.usage.{input_tokens,output_tokens}` (u64 del provider → i32
+/// saturado para la columna). `None` si falta o no es número.
+#[must_use]
+pub fn parse_responses_usage(resp: &Value) -> Option<TurnUsage> {
+    let usage = resp.get("usage")?;
+    let to_i32 = |v: &Value| -> Option<i32> {
+        v.as_u64()
+            .map(|n| i32::try_from(n).unwrap_or(i32::MAX))
+            .or_else(|| v.as_i64().map(|n| i32::try_from(n).unwrap_or(0).max(0)))
+    };
+    Some(TurnUsage {
+        input_tokens: to_i32(usage.get("input_tokens")?)?,
+        output_tokens: to_i32(usage.get("output_tokens")?)?,
+    })
 }
 
 /// Convierte tools estilo chat (`{type:function, function:{...}}`) al formato
@@ -120,10 +155,14 @@ pub fn build_responses_body(
     body
 }
 
-/// Parsea `output[]`: primer `output_text` + todos los `function_call`.
+/// Parsea `output[]`: primer `output_text` + todos los `function_call` +
+/// `usage` del turno (si viene).
 #[must_use]
 pub fn parse_responses_output(resp: &Value) -> ResponsesOutput {
-    let mut out = ResponsesOutput::default();
+    let mut out = ResponsesOutput {
+        usage: parse_responses_usage(resp),
+        ..Default::default()
+    };
     let Some(items) = resp.get("output").and_then(Value::as_array) else {
         return out;
     };
@@ -276,6 +315,42 @@ mod tests {
         assert_eq!(out.function_calls.len(), 1);
         assert_eq!(out.function_calls[0].name, "crear_lead");
         assert_eq!(out.function_calls[0].call_id.as_deref(), Some("c1"));
+    }
+
+    #[test]
+    fn usage_se_lee_y_falta_da_none() {
+        let con =
+            serde_json::json!({"usage": {"input_tokens": 120, "output_tokens": 35}, "output": []});
+        assert_eq!(
+            parse_responses_output(&con).usage,
+            Some(TurnUsage {
+                input_tokens: 120,
+                output_tokens: 35
+            })
+        );
+        assert!(parse_responses_output(&serde_json::json!({"output": []}))
+            .usage
+            .is_none());
+        assert!(
+            parse_responses_output(&serde_json::json!({"usage": {"input_tokens": 1}}))
+                .usage
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn usage_suma_satura_sin_desbordar() {
+        let a = TurnUsage {
+            input_tokens: i32::MAX,
+            output_tokens: 10,
+        };
+        let b = TurnUsage {
+            input_tokens: 5,
+            output_tokens: i32::MAX,
+        };
+        let s = a.saturating_add(b);
+        assert_eq!(s.input_tokens, i32::MAX);
+        assert_eq!(s.output_tokens, i32::MAX);
     }
 
     #[test]

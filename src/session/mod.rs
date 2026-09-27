@@ -98,6 +98,8 @@ mod tests {
             sender: SenderType::Ai.as_str().to_string(),
             body: "hola".to_string(),
             sequence_num: seq,
+            input_tokens: None,
+            output_tokens: None,
             created_at: Utc::now(),
         }
     }

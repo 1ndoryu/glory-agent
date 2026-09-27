@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO agent_messages (session_id, sender, body, sequence_num) VALUES ($1, $2, $3, $4) RETURNING id, session_id, sender, body, sequence_num, created_at",
+  "query": "INSERT INTO agent_messages (session_id, sender, body, sequence_num, input_tokens, output_tokens) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, session_id, sender, body, sequence_num, input_tokens, output_tokens, created_at",
   "describe": {
     "columns": [
       {
@@ -30,6 +30,16 @@
       },
       {
         "ordinal": 5,
+        "name": "input_tokens",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 6,
+        "name": "output_tokens",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 7,
         "name": "created_at",
         "type_info": "Timestamptz"
       }
@@ -39,7 +49,9 @@
         "Uuid",
         "Text",
         "Text",
-        "Int8"
+        "Int8",
+        "Int4",
+        "Int4"
       ]
     },
     "nullable": [
@@ -48,8 +60,10 @@
       false,
       false,
       false,
+      true,
+      true,
       false
     ]
   },
-  "hash": "83cf4192a260bcd8a52a1453ac2fd323c1eeb9a7d2fd4dad75284ac577a191d5"
+  "hash": "b58ad422c4319d6f2462fc8e1b76b8c88268e65b38e6e29adaa170c3f83ae210"
 }

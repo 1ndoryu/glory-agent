@@ -28,6 +28,10 @@ use crate::{
     tools::{ToolCtx, ToolExecutor, ToolRegistry, MAX_TOOL_ITERATIONS},
 };
 
+/* [F0] Turnos previos enviados al LLM (la ventana los recorta si hace
+ * falta; sin esto la IA solo veía el mensaje actual). */
+pub const HISTORIAL_TURNOS: i64 = 30;
+
 #[derive(Clone)]
 pub struct AgentState {
     pub hub: ChatHub,
@@ -38,6 +42,9 @@ pub struct AgentState {
     pub executor: Option<Arc<dyn ToolExecutor>>,
     pub http: reqwest::Client,
     pub pool: Option<sqlx::PgPool>,
+    /* [F0] Ventana por defecto del producto; `agent_config`
+     * (`context_window_tokens`) puede subirla/bajarla por turno. */
+    pub context_window_tokens: usize,
 }
 
 impl AgentState {
@@ -55,6 +62,17 @@ impl AgentState {
                 .build()
                 .unwrap_or_default(),
             pool: None,
+            context_window_tokens: context::MAX_CONTEXT_TOKENS,
+        }
+    }
+
+    /// Ventana por defecto del producto (el `agent_config` manda por turno).
+    #[must_use]
+    pub fn with_context_window(self, tokens: usize) -> Self {
+        Self {
+            context_window_tokens: tokens
+                .clamp(context::MIN_CONTEXT_TOKENS, context::LIMIT_CONTEXT_TOKENS),
+            ..self
         }
     }
 
@@ -236,17 +254,42 @@ pub fn inyectar_llamadas(
     n
 }
 
+/* [F0] Mapea el historial persistido al rol del LLM. `staff` entra como
+ * `user` marcado (contexto humano, no salida de la IA); `system` se
+ * conserva; el mensaje actual (`actual_seq`, ya persistido) se excluye
+ * porque el llamador lo anexa al final. */
+fn historial_para_llm(mensajes: &[ChatMessage], actual_seq: i64) -> Vec<serde_json::Value> {
+    mensajes
+        .iter()
+        .filter(|m| m.sequence_num != actual_seq && !m.body.trim().is_empty())
+        .filter_map(|m| {
+            let content = if m.sender == SenderType::Staff.as_str() {
+                format!("[Nota staff] {}", m.body)
+            } else {
+                m.body.clone()
+            };
+            let role = match m.sender.as_str() {
+                "client" | "staff" => "user",
+                "ai" => "assistant",
+                "system" => "system",
+                _ => return None,
+            };
+            Some(serde_json::json!({"role": role, "content": content}))
+        })
+        .collect()
+}
+
 /* [169A-3] Una vuelta provider→tools: llama al provider, ejecuta los
  * `function_call` registrados y anexa sus salidas a `messages`.
- * Retorna (texto, proseguir): `false` cuando no quedan calls pendientes
- * o no hay executor (comportamiento v1). */
+ * Retorna (texto, proseguir, usage de esta llamada): `false` cuando no
+ * quedan calls pendientes o no hay executor (comportamiento v1). */
 async fn provider_turn(
     state: &AgentState,
     session_id: Uuid,
     messages: &mut Vec<serde_json::Value>,
     tools_ref: Option<&serde_json::Value>,
     session_header: &str,
-) -> Result<(Option<String>, bool), AgentError> {
+) -> Result<(Option<String>, bool, Option<providers::TurnUsage>), AgentError> {
     let resp = providers::call_provider(
         &state.provider,
         messages,
@@ -259,7 +302,7 @@ async fn provider_turn(
     .map_err(AgentError::Ai)?;
     let out = providers::parse_responses_output(&resp);
     let Some(executor) = &state.executor else {
-        return Ok((out.text, false));
+        return Ok((out.text, false, out.usage));
     };
     let pending: Vec<_> = out
         .function_calls
@@ -267,7 +310,7 @@ async fn provider_turn(
         .filter(|c| state.tools.contains(&c.name))
         .collect();
     if pending.is_empty() {
-        return Ok((out.text, false));
+        return Ok((out.text, false, out.usage));
     }
     /* El input del siguiente turno debe traer cada `function_call` antes de
      * su `function_call_output` (si no, el provider 400 por `call_id`). */
@@ -292,7 +335,7 @@ async fn provider_turn(
         item.insert("output".to_string(), serde_json::Value::String(output_str));
         messages.push(serde_json::Value::Object(item));
     }
-    Ok((out.text, true))
+    Ok((out.text, true, out.usage))
 }
 
 /// Guarda + gate humano + llama IA (si hay key y la IA puede responder) +
@@ -329,6 +372,8 @@ async fn process_incoming(
             sender: SenderType::Client.as_str().to_string(),
             body: body.to_string(),
             sequence_num: seq,
+            input_tokens: None,
+            output_tokens: None,
             created_at: chrono::Utc::now(),
         };
         let _ = state.hub.broadcast(session_id, &WsServerMessage::live(msg));
@@ -362,8 +407,11 @@ async fn process_incoming(
             }
         }
     }
-    let history = vec![serde_json::json!({"role": "user", "content": body})];
-    let mut messages = context::build_messages(&system, None, history);
+    /* [F0] Historial real + ventana efectiva (helpers abajo: la función
+     * no cabe en el límite de líneas con todo inline). */
+    let history = cargar_historial(state, session_id, seq, body).await;
+    let ventana = ventana_para_turno(state).await;
+    let mut messages = context::build_messages_with_budget(&system, None, history, ventana);
     let tools = if state.tools.is_empty() {
         None
     } else {
@@ -372,27 +420,77 @@ async fn process_incoming(
     let tools_ref = tools.as_ref();
     let session_header = session_id.to_string();
 
-    /* Loop F6: provider→tools→provider hasta agotar calls o iteraciones. */
+    /* Loop F6: provider→tools→provider hasta agotar calls o iteraciones.
+     * El usage se suma por llamada (el loop de tools hace varias). */
     let mut reply: Option<String> = None;
+    let mut uso = providers::TurnUsage::default();
     for _ in 0..=MAX_TOOL_ITERATIONS {
-        let (text, proseguir) =
+        let (text, proseguir, turno) =
             provider_turn(state, session_id, &mut messages, tools_ref, &session_header).await?;
+        if let Some(u) = turno {
+            uso = uso.saturating_add(u);
+        }
         reply = text;
         if !proseguir {
             break;
         }
     }
+    let uso = (uso.input_tokens > 0 || uso.output_tokens > 0).then_some(uso);
 
     if let (Some(pool), Some(text)) = (&state.pool, reply.clone()) {
         let ai_seq = state.hub.next_sequence(session_id);
-        if let Ok(msg) =
-            persistence::insert_message(pool, session_id, SenderType::Ai.as_str(), &text, ai_seq)
-                .await
+        if let Ok(msg) = persistence::insert_message_with_usage(
+            pool,
+            session_id,
+            SenderType::Ai.as_str(),
+            &text,
+            ai_seq,
+            uso.map(|u| u.input_tokens),
+            uso.map(|u| u.output_tokens),
+        )
+        .await
         {
             let _ = state.hub.broadcast(session_id, &WsServerMessage::live(msg));
         }
     }
     Ok((seq, reply))
+}
+
+/* [F0] Previos cronológicos + actual al final. `list_messages` devuelve
+ * DESC: se filtra el recién insertado por `seq` y se invierte. Sin BD, cae
+ * al mensaje actual (comportamiento previo). */
+async fn cargar_historial(
+    state: &AgentState,
+    session_id: Uuid,
+    seq: i64,
+    body: &str,
+) -> Vec<serde_json::Value> {
+    let mut history = vec![];
+    if let Some(pool) = &state.pool {
+        if let Ok(previos) =
+            persistence::list_messages(pool, session_id, HISTORIAL_TURNOS + 1).await
+        {
+            let mut previos = historial_para_llm(&previos, seq);
+            previos.reverse();
+            history.append(&mut previos);
+        }
+    }
+    history.push(serde_json::json!({"role": "user", "content": body}));
+    history
+}
+
+/* [F0] Ventana efectiva: `agent_config` manda por turno; si no, la del
+ * producto; todo acotado en `ventana_efectiva`. */
+async fn ventana_para_turno(state: &AgentState) -> usize {
+    if let Some(pool) = &state.pool {
+        let cfg = persistence::get_config(pool, "context_window_tokens")
+            .await
+            .ok()
+            .flatten();
+        context::ventana_efectiva(cfg.as_deref(), state.context_window_tokens)
+    } else {
+        context::ventana_efectiva(None, state.context_window_tokens)
+    }
 }
 
 #[cfg(test)]
@@ -437,6 +535,50 @@ mod tests {
         let mut messages = vec![];
         assert_eq!(inyectar_llamadas(&mut messages, &resp, &tools), 0);
         assert!(messages.is_empty());
+    }
+
+    fn mensaje(sender: &str, body: &str, seq: i64) -> ChatMessage {
+        ChatMessage {
+            id: Uuid::new_v4(),
+            session_id: Uuid::new_v4(),
+            sender: sender.to_string(),
+            body: body.to_string(),
+            sequence_num: seq,
+            input_tokens: None,
+            output_tokens: None,
+            created_at: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn historial_mapea_roles_y_excluye_actual() {
+        let previos = vec![
+            mensaje("client", "hola", 1),
+            mensaje("ai", "buenas", 2),
+            mensaje("staff", "prioridad alta", 3),
+            mensaje("client", "busco casa", 4), // actual
+        ];
+        let h = historial_para_llm(&previos, 4);
+        assert_eq!(h.len(), 3);
+        assert_eq!(h[0]["role"], "user");
+        assert_eq!(h[1]["role"], "assistant");
+        assert_eq!(h[2]["role"], "user");
+        assert!(h[2]["content"]
+            .as_str()
+            .unwrap_or("")
+            .starts_with("[Nota staff]"));
+    }
+
+    #[test]
+    fn historial_descarta_vacios_y_desconocidos() {
+        let previos = vec![
+            mensaje("client", "   ", 1),
+            mensaje("raro", "x", 2),
+            mensaje("client", "ok", 3),
+        ];
+        let h = historial_para_llm(&previos, 99);
+        assert_eq!(h.len(), 1);
+        assert_eq!(h[0]["content"], "ok");
     }
 
     #[test]

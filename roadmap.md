@@ -41,6 +41,16 @@
   `varsense.config.json` (precedente GLORYPORT, Rust) + `.gitignore` para
   `.quality-reports/`/`.sentinel/`. Diagnóstico de consola `[]`,
   `varsense:true`; doctor `readyForGate:true`; analyze 0/0/0/0.
+- [x] F9 Pista de contexto+usage (279A-2, 2026-09-27, pide MN-Inmobiliaria):
+  historial real en `process_incoming` (`HISTORIAL_TURNOS=30`, `staff` como
+  `user` marcado, actual excluido por `seq`), `usage` exacto del provider
+  (`TurnUsage`, suma saturada por llamada, `NULL` en filas viejas/no-IA),
+  ventana configurable (`agent_config.context_window_tokens`, acotada
+  1k-200k, default `AgentState::with_context_window`) +
+  `migrations/0003_usage.sql` + `.sqlx/` regenerado. `fmt` + `check` +
+  `clippy --all-targets -D warnings` limpios; 24 unit + 5 WS + 1 header +
+  `db_roundtrip -- --ignored` PASS; `sentinel analyze` 0/0/0/0; prueba viva
+  `input_tokens=120, output_tokens=35` con `ROLLBACK`.
 - [ ] Migración Nakomi (pendiente explícito, no empezar sin autorización).
 
 ## Notas
