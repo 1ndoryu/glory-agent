@@ -14,10 +14,14 @@ pub struct ChatApiOptions {
 }
 
 impl ChatApiOptions {
+    /* [289A-5] Techo generoso: muse-spark razona (~600-800 tokens) antes de
+     * responder, y con 800 el turno post-tool moría `incomplete` sin texto
+     * ni calls (verificado crudo: 800→incomplete, 2000→completed). Los
+     * tokens son baratos; 4096 cubre razonamiento + listado con margen. */
     #[must_use]
     pub const fn standard() -> Self {
         Self {
-            max_output_tokens: 800,
+            max_output_tokens: 4096,
             timeout_secs: 60,
         }
     }
@@ -244,6 +248,16 @@ pub async fn call_provider(
             .json()
             .await
             .map_err(|e| format!("AI parse error: {e}"))?;
+        /* [289A-5] `incomplete` (p. ej. `max_output_tokens`) deja al loop
+         * sin texto ni calls: sin este aviso el turno muere en silencio. */
+        if json.get("status").and_then(Value::as_str) == Some("incomplete") {
+            let motivo = json
+                .get("incomplete_details")
+                .and_then(|d| d.get("reason"))
+                .and_then(Value::as_str)
+                .unwrap_or("?");
+            tracing::warn!("AI incompleta ({motivo}): el turno puede quedar sin respuesta");
+        }
         tracing::info!("AI OK: modelo={}", config.model);
         return Ok(json);
     }
@@ -270,7 +284,7 @@ mod tests {
             ChatApiOptions::standard(),
         );
         assert_eq!(body["model"], "muse-spark-1.3-contributor");
-        assert_eq!(body["max_output_tokens"], 800);
+        assert_eq!(body["max_output_tokens"], 4096);
         assert_eq!(body["store"], false);
         assert!(body.get("temperature").is_none());
         assert!(body.get("messages").is_none());
