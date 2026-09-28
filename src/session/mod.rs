@@ -44,6 +44,18 @@ impl ChatHub {
         entry.fetch_add(1, Ordering::SeqCst)
     }
 
+    /// Eleva el contador al menos a `next` (reseed tras reinicio: el hub es
+    /// memoria y la BD conserva filas viejas; sin esto el primer mensaje
+    /// post-reinicio reutiliza `sequence_num` y viola la unicidad
+    /// `(session_id, sequence_num)` — hallazgo batería 289A-1 2026-09-28).
+    pub fn asegurar_minimo(&self, session_id: Uuid, next: i64) {
+        let entry = self
+            .sequences
+            .entry(session_id)
+            .or_insert_with(|| AtomicI64::new(next));
+        entry.fetch_max(next, Ordering::SeqCst);
+    }
+
     pub fn subscribe(&self, session_id: Uuid, tx: UnboundedSender<Message>) {
         self.sessions
             .entry(session_id)
@@ -111,6 +123,16 @@ mod tests {
         assert_eq!(hub.next_sequence(session), 1);
         assert_eq!(hub.next_sequence(session), 2);
         assert_eq!(hub.next_sequence(Uuid::new_v4()), 1);
+    }
+
+    #[test]
+    fn asegurar_minimo_reseeds_after_restart() {
+        let hub = ChatHub::new();
+        let session = Uuid::new_v4();
+        hub.asegurar_minimo(session, 6);
+        assert_eq!(hub.next_sequence(session), 6);
+        hub.asegurar_minimo(session, 3);
+        assert_eq!(hub.next_sequence(session), 7);
     }
 
     #[test]

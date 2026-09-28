@@ -9,6 +9,7 @@ use uuid::Uuid;
 
 use crate::errors::AgentError;
 use crate::models::{AgentConfig, ChatMessage, ChatSession, OutboxEntry, ResponseCycle};
+use crate::session::ChatHub;
 
 /// Estados válidos de `agent_sessions.status` (CHECK en 0001).
 #[must_use]
@@ -93,6 +94,30 @@ pub async fn insert_message_with_usage(
             "mensaje vacío o >8000 chars".to_string(),
         ));
     }
+    insert_message_raw(
+        pool,
+        session_id,
+        sender,
+        body,
+        sequence_num,
+        input_tokens,
+        output_tokens,
+    )
+    .await
+    .map_err(AgentError::from)
+}
+
+/// INSERT crudo (mismo SQL cacheado en `.sqlx/`): retorna `sqlx::Error` sin
+/// convertir para que `insert_message_seq` distinga el 23505 y reintente.
+async fn insert_message_raw(
+    pool: &PgPool,
+    session_id: Uuid,
+    sender: &str,
+    body: &str,
+    sequence_num: i64,
+    input_tokens: Option<i32>,
+    output_tokens: Option<i32>,
+) -> Result<ChatMessage, sqlx::Error> {
     let msg = sqlx::query_as!(
         ChatMessage,
         "INSERT INTO agent_messages (session_id, sender, body, sequence_num, input_tokens, output_tokens) \
@@ -108,6 +133,59 @@ pub async fn insert_message_with_usage(
     .fetch_one(pool)
     .await?;
     Ok(msg)
+}
+
+/// Asignador único de `sequence_num`: resiembra el hub desde el MAX de BD
+/// (el hub es memoria y vuelve a 1 en cada reinicio) y reintenta ante 23505
+/// (carrera entre dos escritores). Sin esto, el primer mensaje post-reinicio
+/// a una sesión vieja reutiliza secuencia y devuelve 500 — hallazgo batería
+/// 289A-1 2026-09-28. Reutiliza `list_messages` (query ya cacheada): no
+/// requiere `cargo sqlx prepare`.
+pub async fn insert_message_seq(
+    pool: &PgPool,
+    hub: &ChatHub,
+    session_id: Uuid,
+    sender: &str,
+    body: &str,
+    input_tokens: Option<i32>,
+    output_tokens: Option<i32>,
+) -> Result<ChatMessage, AgentError> {
+    if body.trim().is_empty() || body.len() > 8000 {
+        return Err(AgentError::BadRequest(
+            "mensaje vacío o >8000 chars".to_string(),
+        ));
+    }
+    for _ in 0..5 {
+        let max = list_messages(pool, session_id, 1)
+            .await?
+            .first()
+            .map_or(0, |m| m.sequence_num);
+        hub.asegurar_minimo(session_id, max + 1);
+        let seq = hub.next_sequence(session_id);
+        match insert_message_raw(
+            pool,
+            session_id,
+            sender,
+            body,
+            seq,
+            input_tokens,
+            output_tokens,
+        )
+        .await
+        {
+            Ok(msg) => return Ok(msg),
+            Err(e) if !es_conflicto_secuencia(&e) => return Err(AgentError::from(e)),
+            Err(_) => {}
+        }
+    }
+    Err(AgentError::Internal(format!(
+        "sequence_num sin hueco tras reintentos (sesión {session_id})"
+    )))
+}
+
+/// Solo el 23505 del INSERT (la otra única, `id`, es UUID v4 aleatorio).
+fn es_conflicto_secuencia(e: &sqlx::Error) -> bool {
+    matches!(e, sqlx::Error::Database(d) if d.code().as_deref() == Some("23505"))
 }
 
 pub async fn list_messages(

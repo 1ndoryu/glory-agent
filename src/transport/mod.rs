@@ -418,19 +418,23 @@ pub async fn responder_turno_persistido(
     let uso = (uso.input_tokens > 0 || uso.output_tokens > 0).then_some(uso);
 
     if let (Some(pool), Some(text)) = (&state.pool, reply.clone()) {
-        let ai_seq = state.hub.next_sequence(session_id);
-        if let Ok(msg) = persistence::insert_message_with_usage(
+        match persistence::insert_message_seq(
             pool,
+            &state.hub,
             session_id,
             SenderType::Ai.as_str(),
             &text,
-            ai_seq,
             uso.map(|u| u.input_tokens),
             uso.map(|u| u.output_tokens),
         )
         .await
         {
-            let _ = state.hub.broadcast(session_id, &WsServerMessage::live(msg));
+            Ok(msg) => {
+                let _ = state.hub.broadcast(session_id, &WsServerMessage::live(msg));
+            }
+            Err(e) => {
+                tracing::warn!("turno IA: respuesta generada pero no persistida: {e}");
+            }
         }
     }
     Ok(reply)
@@ -452,18 +456,28 @@ async fn process_incoming(
     if !state.timing.check_budget(budget_key) {
         return Err(AgentError::RateLimited("demasiadas peticiones".to_string()));
     }
-    let seq = state.hub.next_sequence(session_id);
 
-    if let Some(pool) = &state.pool {
+    let seq = if let Some(pool) = &state.pool {
         /* Sesión elegida por el cliente: se bootstrappea idempotente antes
-         * del primer mensaje (si no, FK). Ver `ensure_session`. */
+         * del primer mensaje (si no, FK). La secuencia la asigna
+         * `insert_message_seq` (reseed + retry 23505). */
         persistence::ensure_session(pool, session_id).await?;
-        let msg =
-            persistence::insert_message(pool, session_id, SenderType::Client.as_str(), body, seq)
-                .await?;
+        let msg = persistence::insert_message_seq(
+            pool,
+            &state.hub,
+            session_id,
+            SenderType::Client.as_str(),
+            body,
+            None,
+            None,
+        )
+        .await?;
+        let seq = msg.sequence_num;
         let _ = state.hub.broadcast(session_id, &WsServerMessage::live(msg));
+        seq
     } else {
         // Sin BD: el fanout realtime sigue funcionando con mensaje efímero.
+        let seq = state.hub.next_sequence(session_id);
         let msg = ChatMessage {
             id: Uuid::new_v4(),
             session_id,
@@ -475,7 +489,8 @@ async fn process_incoming(
             created_at: chrono::Utc::now(),
         };
         let _ = state.hub.broadcast(session_id, &WsServerMessage::live(msg));
-    }
+        seq
+    };
 
     responder_turno_persistido(state, session_id, body, seq)
         .await
