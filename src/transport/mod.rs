@@ -338,55 +338,35 @@ async fn provider_turn(
     Ok((out.text, true, out.usage))
 }
 
-/// Guarda + gate humano + llama IA (si hay key y la IA puede responder) +
-/// loop de tools + broadcast. Retorna (sequence, respuesta IA).
-async fn process_incoming(
+/// Turno IA sobre un mensaje `client` YA persistido por un canal externo
+/// (`WhatsApp`: el webhook persiste + vincula por su cuenta y luego llama
+/// aquí). Aplica el gate humano + loop de tools + persiste `ai` +
+/// broadcast, y retorna la respuesta para que el canal la reenvíe.
+/// `client_seq` es la secuencia del mensaje ya guardado: se excluye del
+/// historial y se re-anexa como turno actual (igual que `process_incoming`).
+/// El llamante es dueño del presupuesto por remitente
+/// (`timing.check_budget`) y del envío al canal con el texto retornado.
+/// Sin key responde `Ok(None)` (degradado F2); el gate humano también da
+/// `None` sin error (persiste + reenvía, sin `reply`: gate 169A-3).
+pub async fn responder_turno_persistido(
     state: &AgentState,
     session_id: Uuid,
     body: &str,
-    budget_key: &str,
-) -> Result<(i64, Option<String>), AgentError> {
+    client_seq: i64,
+) -> Result<Option<String>, AgentError> {
     if body.trim().is_empty() || body.len() > 8000 {
         return Err(AgentError::BadRequest(
             "mensaje vacío o >8000 chars".to_string(),
         ));
     }
-    if !state.timing.check_budget(budget_key) {
-        return Err(AgentError::RateLimited("demasiadas peticiones".to_string()));
-    }
-    let seq = state.hub.next_sequence(session_id);
-
-    if let Some(pool) = &state.pool {
-        /* Sesión elegida por el cliente: se bootstrappea idempotente antes
-         * del primer mensaje (si no, FK). Ver `ensure_session`. */
-        persistence::ensure_session(pool, session_id).await?;
-        let msg =
-            persistence::insert_message(pool, session_id, SenderType::Client.as_str(), body, seq)
-                .await?;
-        let _ = state.hub.broadcast(session_id, &WsServerMessage::live(msg));
-    } else {
-        // Sin BD: el fanout realtime sigue funcionando con mensaje efímero.
-        let msg = ChatMessage {
-            id: Uuid::new_v4(),
-            session_id,
-            sender: SenderType::Client.as_str().to_string(),
-            body: body.to_string(),
-            sequence_num: seq,
-            input_tokens: None,
-            output_tokens: None,
-            created_at: chrono::Utc::now(),
-        };
-        let _ = state.hub.broadcast(session_id, &WsServerMessage::live(msg));
-    }
-
     if state.provider.api_key.trim().is_empty() {
-        return Ok((seq, None));
+        return Ok(None);
     }
 
     /* Gate 169A-3: humano al mando → persiste y reenvía, sin `reply`. */
     if let Some(pool) = &state.pool {
         if !ai_may_respond(pool, session_id).await? {
-            return Ok((seq, None));
+            return Ok(None);
         }
     }
 
@@ -409,7 +389,7 @@ async fn process_incoming(
     }
     /* [F0] Historial real + ventana efectiva (helpers abajo: la función
      * no cabe en el límite de líneas con todo inline). */
-    let history = cargar_historial(state, session_id, seq, body).await;
+    let history = cargar_historial(state, session_id, client_seq, body).await;
     let ventana = ventana_para_turno(state).await;
     let mut messages = context::build_messages_with_budget(&system, None, history, ventana);
     let tools = if state.tools.is_empty() {
@@ -453,7 +433,53 @@ async fn process_incoming(
             let _ = state.hub.broadcast(session_id, &WsServerMessage::live(msg));
         }
     }
-    Ok((seq, reply))
+    Ok(reply)
+}
+
+/// Guarda + gate humano + llama IA (si hay key y la IA puede responder) +
+/// loop de tools + broadcast. Retorna (sequence, respuesta IA).
+async fn process_incoming(
+    state: &AgentState,
+    session_id: Uuid,
+    body: &str,
+    budget_key: &str,
+) -> Result<(i64, Option<String>), AgentError> {
+    if body.trim().is_empty() || body.len() > 8000 {
+        return Err(AgentError::BadRequest(
+            "mensaje vacío o >8000 chars".to_string(),
+        ));
+    }
+    if !state.timing.check_budget(budget_key) {
+        return Err(AgentError::RateLimited("demasiadas peticiones".to_string()));
+    }
+    let seq = state.hub.next_sequence(session_id);
+
+    if let Some(pool) = &state.pool {
+        /* Sesión elegida por el cliente: se bootstrappea idempotente antes
+         * del primer mensaje (si no, FK). Ver `ensure_session`. */
+        persistence::ensure_session(pool, session_id).await?;
+        let msg =
+            persistence::insert_message(pool, session_id, SenderType::Client.as_str(), body, seq)
+                .await?;
+        let _ = state.hub.broadcast(session_id, &WsServerMessage::live(msg));
+    } else {
+        // Sin BD: el fanout realtime sigue funcionando con mensaje efímero.
+        let msg = ChatMessage {
+            id: Uuid::new_v4(),
+            session_id,
+            sender: SenderType::Client.as_str().to_string(),
+            body: body.to_string(),
+            sequence_num: seq,
+            input_tokens: None,
+            output_tokens: None,
+            created_at: chrono::Utc::now(),
+        };
+        let _ = state.hub.broadcast(session_id, &WsServerMessage::live(msg));
+    }
+
+    responder_turno_persistido(state, session_id, body, seq)
+        .await
+        .map(|respuesta| (seq, respuesta))
 }
 
 /* [F0] Previos cronológicos + actual al final. `list_messages` devuelve
@@ -590,5 +616,29 @@ mod tests {
             0
         );
         assert!(messages.is_empty());
+    }
+
+    /* Turno sobre mensaje ya persistido (canales externos como WhatsApp):
+     * sin key no hay IA (degradado F2) y no toca BD; vacío se rechaza. */
+    #[tokio::test]
+    async fn turno_persistido_sin_key_no_responde() {
+        let state = AgentState::new(
+            ProviderConfig::opencode_go(String::new()),
+            PromptConfig::new("t", "s", "r", "e"),
+        );
+        let r = responder_turno_persistido(&state, Uuid::new_v4(), "hola", 1)
+            .await
+            .unwrap();
+        assert_eq!(r, None);
+    }
+
+    #[tokio::test]
+    async fn turno_persistido_rechaza_vacio() {
+        let state = AgentState::new(
+            ProviderConfig::opencode_go(String::new()),
+            PromptConfig::new("t", "s", "r", "e"),
+        );
+        let r = responder_turno_persistido(&state, Uuid::new_v4(), "   ", 1).await;
+        assert!(matches!(r, Err(AgentError::BadRequest(_))));
     }
 }
