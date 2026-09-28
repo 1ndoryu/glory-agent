@@ -17,11 +17,12 @@ impl ChatApiOptions {
     /* [289A-5] Techo generoso: muse-spark razona (~600-800 tokens) antes de
      * responder, y con 800 el turno post-tool moría `incomplete` sin texto
      * ni calls (verificado crudo: 800→incomplete, 2000→completed). Los
-     * tokens son baratos; 4096 cubre razonamiento + listado con margen. */
+     * tokens son baratos; 8192 cubre razonamiento + listados largos con
+     * margen de sobra. */
     #[must_use]
     pub const fn standard() -> Self {
         Self {
-            max_output_tokens: 4096,
+            max_output_tokens: 8192,
             timeout_secs: 60,
         }
     }
@@ -284,7 +285,7 @@ mod tests {
             ChatApiOptions::standard(),
         );
         assert_eq!(body["model"], "muse-spark-1.3-contributor");
-        assert_eq!(body["max_output_tokens"], 4096);
+        assert_eq!(body["max_output_tokens"], 8192);
         assert_eq!(body["store"], false);
         assert!(body.get("temperature").is_none());
         assert!(body.get("messages").is_none());
