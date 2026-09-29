@@ -521,7 +521,7 @@ async fn cargar_historial(
 }
 
 /* [F0] Ventana efectiva: `agent_config` manda por turno; si no, la del
- * producto; todo acotado en `ventana_efectiva`. */
+ * producto; la ventana queda acotada en `ventana_efectiva`. */
 async fn ventana_para_turno(state: &AgentState) -> usize {
     if let Some(pool) = &state.pool {
         let cfg = persistence::get_config(pool, "context_window_tokens")
