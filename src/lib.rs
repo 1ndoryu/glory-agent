@@ -9,6 +9,7 @@
  * Primer consumidor: Inmobiliaria. Capas: glory-rs (base) <- glory-agent <- producto.
  * El negocio (prompts y tools concretas) vive en cada consumidor, nunca aquí. */
 
+pub mod channels;
 pub mod context;
 pub mod errors;
 pub mod models;
