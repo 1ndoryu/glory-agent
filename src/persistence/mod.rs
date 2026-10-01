@@ -7,8 +7,13 @@
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use chrono::{DateTime, Utc};
+
 use crate::errors::AgentError;
-use crate::models::{AgentConfig, ChatMessage, ChatSession, OutboxEntry, ResponseCycle};
+use crate::handoff::{transicion, AccionHandoff};
+use crate::models::{
+    AgentConfig, AgentEvento, ChatMessage, ChatSession, OutboxEntry, ResponseCycle, ResumenUso,
+};
 use crate::session::ChatHub;
 
 /// Estados válidos de `agent_sessions.status` (CHECK en 0001).
@@ -503,6 +508,159 @@ pub async fn record_inbound(
     .fetch_optional(pool)
     .await?;
     Ok(row)
+}
+
+/* -------------------------------------------------- F4: consola */
+
+/// Tipos de `agent_eventos.tipo` (CHECK en 0005). Boundary primero.
+#[must_use]
+pub fn valid_evento_tipo(tipo: &str) -> bool {
+    matches!(
+        tipo,
+        "handoff.tomar"
+            | "handoff.devolver"
+            | "handoff.cerrar"
+            | "handoff.reabrir"
+            | "config.cambio"
+            | "import.puntual"
+    )
+}
+
+/// Valida `actor` staff (1..200 chars recortado, sin PII del visitante).
+fn actor_limpio(actor: &str) -> Result<&str, AgentError> {
+    let actor = actor.trim();
+    if actor.is_empty() || actor.len() > 200 {
+        return Err(AgentError::BadRequest(
+            "actor staff 1..200 chars".to_string(),
+        ));
+    }
+    Ok(actor)
+}
+
+/// Añade un evento de auditoría (append-only: sin editar ni borrar).
+pub async fn registrar_evento(
+    pool: &PgPool,
+    session_id: Uuid,
+    tipo: &str,
+    actor: &str,
+    detalle: &serde_json::Value,
+) -> Result<AgentEvento, AgentError> {
+    if !valid_evento_tipo(tipo) {
+        return Err(AgentError::BadRequest(
+            "evento tipo debe ser handoff.*|config.cambio|import.puntual".to_string(),
+        ));
+    }
+    let row = sqlx::query_as!(
+        AgentEvento,
+        "INSERT INTO agent_eventos (session_id, tipo, actor, detalle) VALUES ($1, $2, $3, $4) \
+         RETURNING id, session_id, tipo, actor, detalle, creado_en",
+        session_id,
+        tipo,
+        actor_limpio(actor)?,
+        detalle
+    )
+    .fetch_one(pool)
+    .await?;
+    Ok(row)
+}
+
+/// Eventos de la sesión, recientes primero (`limite` 1..200).
+pub async fn listar_eventos(
+    pool: &PgPool,
+    session_id: Uuid,
+    limite: i64,
+) -> Result<Vec<AgentEvento>, AgentError> {
+    let rows = sqlx::query_as!(
+        AgentEvento,
+        "SELECT id, session_id, tipo, actor, detalle, creado_en FROM agent_eventos \
+         WHERE session_id = $1 ORDER BY creado_en DESC LIMIT $2",
+        session_id,
+        limite.clamp(1, 200)
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+/// Handoff atómico: valida la transición pura, cambia `status` y audita
+/// en una transacción (sin hilo a medias). `motivo` opcional al `detalle`.
+pub async fn handoff(
+    pool: &PgPool,
+    session_id: Uuid,
+    accion: &str,
+    actor: &str,
+    motivo: Option<&str>,
+) -> Result<ChatSession, AgentError> {
+    let accion = AccionHandoff::parse(accion).map_err(|e| AgentError::BadRequest(e.to_string()))?;
+    let actual = get_session(pool, session_id)
+        .await?
+        .ok_or_else(|| AgentError::NotFound(format!("sesión {session_id}")))?;
+    let destino =
+        transicion(&actual.status, accion).map_err(|e| AgentError::BadRequest(e.to_string()))?;
+    let mut tx = pool.begin().await?;
+    let sesion = sqlx::query_as!(
+        ChatSession,
+        "UPDATE agent_sessions SET status = $2, updated_at = now() WHERE id = $1 \
+         RETURNING id, visitor_name, contact, status, ai_enabled, created_at, updated_at",
+        session_id,
+        destino
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    let detalle = match motivo.map(str::trim).filter(|m| !m.is_empty()) {
+        Some(m) => serde_json::json!({ "motivo": m }),
+        None => serde_json::json!({}),
+    };
+    sqlx::query!(
+        "INSERT INTO agent_eventos (session_id, tipo, actor, detalle) VALUES ($1, $2, $3, $4)",
+        session_id,
+        accion.tipo_evento(),
+        actor_limpio(actor)?,
+        detalle
+    )
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(sesion)
+}
+
+/// Uso agregado de la sesión para la consola (`desde`/`hasta` `None` = todo).
+/// Solo mensajes `ai` con `usage`; el resto no suma.
+pub async fn resumen_uso(
+    pool: &PgPool,
+    session_id: Uuid,
+    desde: Option<DateTime<Utc>>,
+    hasta: Option<DateTime<Utc>>,
+) -> Result<ResumenUso, AgentError> {
+    let row = sqlx::query!(
+        "SELECT COUNT(*) AS \"mensajes_ai!\", \
+         COALESCE(SUM(input_tokens), 0)::BIGINT AS \"input_tokens!\", \
+         COALESCE(SUM(output_tokens), 0)::BIGINT AS \"output_tokens!\" \
+         FROM agent_messages WHERE session_id = $1 AND sender = 'ai' \
+         AND ($2::TIMESTAMPTZ IS NULL OR created_at >= $2) \
+         AND ($3::TIMESTAMPTZ IS NULL OR created_at <= $3)",
+        session_id,
+        desde,
+        hasta
+    )
+    .fetch_one(pool)
+    .await?;
+    Ok(ResumenUso {
+        mensajes_ai: row.mensajes_ai,
+        input_tokens: row.input_tokens,
+        output_tokens: row.output_tokens,
+    })
+}
+
+/// Toda la config para la consola (claves del núcleo + producto).
+pub async fn list_config(pool: &PgPool) -> Result<Vec<AgentConfig>, AgentError> {
+    let rows = sqlx::query_as!(
+        AgentConfig,
+        "SELECT key, value, updated_at FROM agent_config ORDER BY key"
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
 }
 
 #[cfg(test)]

@@ -12,6 +12,7 @@
 pub mod channels;
 pub mod context;
 pub mod errors;
+pub mod handoff;
 pub mod models;
 pub mod persistence;
 pub mod prompts;

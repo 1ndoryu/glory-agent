@@ -77,6 +77,28 @@ pub struct AgentConfig {
     pub updated_at: DateTime<Utc>,
 }
 
+/// Fila de `agent_eventos` (F4): auditoría append-only para la consola
+/// (handoff, cambios de config, imports puntuales). `actor` es staff
+/// genérico; `detalle` lleva `motivo` u otros campos según `tipo`.
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct AgentEvento {
+    pub id: Uuid,
+    pub session_id: Uuid,
+    pub tipo: String,
+    pub actor: String,
+    pub detalle: serde_json::Value,
+    pub creado_en: DateTime<Utc>,
+}
+
+/// Uso agregado por sesión para la consola (F4): suma exacta del `usage`
+/// por turno. Filas sin `usage` (viejas, no-IA, import) no suman.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResumenUso {
+    pub mensajes_ai: i64,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+}
+
 /// Mensaje servidor→cliente por WS. `delivery`: live (nuevo) o history (reconexión).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WsServerMessage {
