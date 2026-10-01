@@ -451,6 +451,60 @@ pub async fn mark_outbox(pool: &PgPool, id: Uuid, status: &str) -> Result<Outbox
     Ok(entry)
 }
 
+/// Metadatos de canal para `record_inbound` (agrupados para no exceder
+/// el tope de aridad del lint). `numero_destino_hash` es HMAC: el número
+/// en plano nunca llega aquí.
+#[derive(Debug, Clone, Default)]
+pub struct InboundCanal {
+    pub canal: String,
+    pub numero_destino_hash: Option<String>,
+    pub id_externo: Option<String>,
+    pub via: Option<String>,
+    pub media_ref: Option<serde_json::Value>,
+    pub imported: bool,
+}
+
+/// Registra un mensaje inbound de canal con dedup por (`canal`, `id_externo`).
+/// Retorna `None` si ya existía esa id externa en el canal (duplicado de
+/// ingress: se descarta, no se duplica). Sin `id_externo` no hay dedup.
+/// El import puntual (`imported = true`) siempre trae `usage` NULL por
+/// construcción (CHECK `chk_agent_messages_import_sin_usage` en 0004).
+pub async fn record_inbound(
+    pool: &PgPool,
+    session_id: Uuid,
+    sender: &str,
+    body: &str,
+    sequence_num: i64,
+    meta: &InboundCanal,
+) -> Result<Option<ChatMessage>, AgentError> {
+    if body.trim().is_empty() || body.len() > 8000 {
+        return Err(AgentError::BadRequest(
+            "mensaje vacío o >8000 chars".to_string(),
+        ));
+    }
+    let row = sqlx::query_as!(
+        ChatMessage,
+        "INSERT INTO agent_messages (session_id, sender, body, sequence_num, canal, \
+          numero_destino_hash, id_externo, via, media_ref, imported) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
+         ON CONFLICT (canal, id_externo) WHERE id_externo IS NOT NULL DO NOTHING \
+         RETURNING id, session_id, sender, body, sequence_num, input_tokens, output_tokens, created_at",
+        session_id,
+        sender,
+        body,
+        sequence_num,
+        meta.canal,
+        meta.numero_destino_hash,
+        meta.id_externo,
+        meta.via,
+        meta.media_ref,
+        meta.imported
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{ai_may_answer, valid_cycle_status, valid_outbox_status};
