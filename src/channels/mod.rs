@@ -9,6 +9,7 @@
  * `idempotency_key` en `Outbound`, SLO wpp (acuse 6s, anti-eco
  * TTL 180s MAX 500, QR por sesión) como obligación del adapter. */
 
+pub mod adapters;
 pub mod outbox;
 
 use std::future::Future;

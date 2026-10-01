@@ -51,7 +51,7 @@
   `clippy --all-targets -D warnings` limpios; 24 unit + 5 WS + 1 header +
   `db_roundtrip -- --ignored` PASS; `sentinel analyze` 0/0/0/0; prueba viva
   `input_tokens=120, output_tokens=35` con `ROLLBACK`.
-- [ ] F10 Plataforma agnóstica chat+IA (en ejecución 2026-10-01, autorizado pasar de diseño a código): núcleo + adaptadores wpp/media/stt, outbox, handoff, consola. Plan: `Agente/planes/plan-extraccion-whatsapp-2026-10-01.md`. Hecho: gate reparado (pins 0.7.16/2.2.9) + `src/channels` (Ingress/Sender/MediaRef/Outbound, gate PASS).
+- [ ] F10 Plataforma agnóstica chat+IA (en ejecución 2026-10-01, autorizado pasar de diseño a código): núcleo + adaptadores wpp/media/stt, outbox, handoff, consola. Plan: `Agente/planes/plan-extraccion-whatsapp-2026-10-01.md`. Hecho: gate reparado (pins 0.7.16/2.2.9) + `src/channels` (Ingress/Sender/MediaRef/Outbound, gate PASS) + `0004_canal.sql` (UNIQUE parcial + `mark_outbox` en boundary + `record_inbound` dedup, etapa `live-f2` PASS) + `channels/adapters.rs` (F3: `AdapterConfig` validada + `EcoFilter` un solo uso + `partir_respuesta` 3 partes + `Presupuestos` STT/media/mensajes, 8 unit, gate PASS).
 - [ ] F11 Historial al front (solo diseño 2026-10-01): hilo completo app sí; import puntual nativo a pedido, sin sync total. Ver §10 del plan F10.
 - [ ] F12 Herramienta local + skill (solo diseño 2026-10-01): AGENTS.md propio + skill atencion-chat (enviar/leer/tomar/import). Ver §11 del plan F10.
 - [ ] Migración Nakomi (pendiente explícito, no empezar sin autorización).
