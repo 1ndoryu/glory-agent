@@ -4,3 +4,8 @@
 # verificación live; el resto compila offline. Ver src/persistence/mod.rs.
 [env]
 SQLX_OFFLINE = "true"
+
+# [10AA-2 F4] Target propio por proyecto: varios crates se llaman
+# `glory-backend` y compartían C:\tmp\glory-target\debug, y se pisaban.
+[build]
+target-dir = "C:/tmp/glory-target/glory-agent"
