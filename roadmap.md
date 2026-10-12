@@ -56,6 +56,8 @@
 - [ ] F12 Herramienta local + skill (solo diseño 2026-10-01): AGENTS.md propio + skill atencion-chat (enviar/leer/tomar/import). Ver §11 del plan F10.
 - [ ] Migración Nakomi (pendiente explícito, no empezar sin autorización).
 
+- [ ] Revisar excepción cargo-audit RUSTSEC-2023-0071 (rsa): **vence 2026-11-12**. Ver `.cargo/audit.toml`. Quitarla si hay parche o sqlx-mysql sale del lock; si no, renovar con fecha nueva.
+
 ## Notas
 
 - Compilar con `CARGO_TARGET_DIR=C:\tmp\glory-target\glory-agent` (techo `C:\tmp` 7 GB).
