@@ -71,18 +71,18 @@ en cada consumidor, nunca en `glory-agent`.
 
 ## 6. Fases
 
-- [ ] **F0 Scaffold**: `cargo new --lib`, `roadmap.md`, `sentinel init --preset rust`,
+- [x] **F0 Scaffold**: `cargo new --lib`, `roadmap.md`, `sentinel init --preset rust`,
   baseline PASS, commit inicial. Verificación: `cargo test` + Sentinel PASS.
-- [ ] **F1 Núcleo sesión+transporte**: models + ChatHub por sesión + WS
+- [x] **F1 Núcleo sesión+transporte**: models + ChatHub por sesión + WS
   visitante/staff + REST fallback + tests hub. Verificación: 2 WS reciben `live`,
   reconexión recibe `history` sin duplicados.
-- [ ] **F2 Provider opencode-go**: trait + impl + retry simple + body builder + mock
+- [x] **F2 Provider opencode-go**: trait + impl + retry simple + body builder + mock
   tests. Verificación: mock 200/429/500 OK.
-- [ ] **F3 Contexto 30k**: truncado + resumen + PromptConfig. Verificación: historial
+- [x] **F3 Contexto 30k**: truncado + resumen + PromptConfig. Verificación: historial
   100 mensajes → request ≤30k tokens estimados.
-- [ ] **F4 Persistencia+timing+outbox**: migraciones + repos + budgets +
+- [x] **F4 Persistencia+timing+outbox**: migraciones + repos + budgets +
   response_cycle (toma humana). Verificación: `cargo fmt --check + check + clippy + test`.
-- [ ] **F5 Integración Inmobiliaria**: `MN-Inmobiliaria` la consume como dependencia;
+- [ ] **F5 Integración Inmobiliaria** (integrada en roadmap 169A-1; falta el lead de prueba de punta a punta): `MN-Inmobiliaria` la consume como dependencia;
   prompts/tools inmobiliaria allí. Verificación: lead de prueba de punta a punta.
 
 ## 7. Gate y evidencia por fase
