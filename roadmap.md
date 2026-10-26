@@ -28,13 +28,14 @@
   `.cargo/audit.toml`. Hecho cuando la entrada se quite (si `sqlx-mysql` sale del lock o llega parche) o se renueve
   con fecha nueva.
 
-## Bloqueos
-
-- `19AA-4` — **Migración Nakomi.** Hecho externo: autorización explícita de la usuaria; sin ella no se empieza
+- [ ] `19AA-4` — **Migración Nakomi.** Hecho externo: autorización explícita de la usuaria; sin ella no se empieza
   (decidido 2026-10-25, antes sin fecha de revisión).
-- `19AA-6` — **E2E vivo del loop de tools contra PG.** Hecho externo: falta una instancia de prueba en el puerto 5433
+- [ ] `19AA-6` — **E2E vivo del loop de tools contra PG.** Hecho externo: falta una instancia de prueba en el puerto 5433
   con su `DATABASE_URL`. En la 89 solo hay PostgreSQL en 5432, sin `.env` ni `.pgpass` del proyecto (comprobado
   2026-10-25); la usuaria provisiona la base y la credencial de prueba. Los unit cubren el executor con fake.
+
+## Bloqueos
+
 
 ## Planes activos
 
