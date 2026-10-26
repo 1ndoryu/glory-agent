@@ -10,6 +10,7 @@
  * El negocio (prompts y tools concretas) vive en cada consumidor, nunca aquí. */
 
 pub mod channels;
+pub mod consola;
 pub mod context;
 pub mod errors;
 pub mod handoff;

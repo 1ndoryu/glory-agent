@@ -7,21 +7,11 @@
 
 ## Siguiente bloque
 
-- [ ] `19AA-1` — **Cerrar F10 (plataforma agnóstica chat+IA) con gate PASS: consola y adaptadores.**
-  En ejecución desde 2026-10-01 (autorizado pasar de diseño a código): núcleo + adaptadores wpp/media/stt, outbox,
-  handoff, consola. Plan: `Agente/planes/plan-extraccion-whatsapp-2026-10-01.md`. Hecho: gate reparado (pins
-  0.7.16/2.2.9) + `src/channels` (Ingress/Sender/MediaRef/Outbound, gate PASS) + `0004_canal.sql` (UNIQUE parcial +
-  `mark_outbox` en boundary + `record_inbound` dedup, etapa `live-f2` PASS) + `channels/adapters.rs` (F3:
-  `AdapterConfig` validada + `EcoFilter` un solo uso + `partir_respuesta` 3 partes + `Presupuestos` STT/media/mensajes,
-  8 unit, gate PASS) + `0005_handoff.sql` + `src/handoff.rs` (F4: máquina pura tomar/devolver/cerrar/reabrir +
-  `handoff` atómico con auditoría + `agent_eventos` append-only + `resumen_uso` + `list_config`, 4 unit + 2 vivos PASS,
-  gate PASS) + `Resolver` adoptado por MN (2026-10-05, commit MN `d7c247f0`: `CanalResolver` envuelve
-  buscar+`ensure_session`+`vincular`; núcleo intacto).
+- [ ] `19AA-2` — **Dar al front el historial completo del hilo (F11).** Hecho cuando la app muestra el hilo entero
+  y el import puntual nativo funciona a petición; sin sync total (§10 del plan F10).
 
 ## Pendientes
 
-- [ ] `19AA-2` — **Dar al front el historial completo del hilo (F11).** Hecho cuando la app muestra el hilo entero
-  y el import puntual nativo funciona a petición; sin sync total (§10 del plan F10).
 - [ ] `19AA-3` — **Crear la herramienta local y la skill `atencion-chat` (F12).** Hecho cuando existan el AGENTS.md
   propio y la skill con enviar/leer/tomar/importar (§11 del plan F10).
 
