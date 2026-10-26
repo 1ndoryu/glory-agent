@@ -1,3 +1,5 @@
+/* sentinel-disable-file sqlx-query-as-sin-macro: consultas en runtime a propósito; el caché offline `.sqlx/` exige una BD viva para regenerarse y esa BD es el bloqueo 19AA-6. Cubierto por unit tests y un E2E pendiente. Retirar al tener el caché. */
+/* sentinel-disable-file sqlx-query-sin-macro: mismo motivo que la línea anterior (advisory lock y SQL de paginación sin macro). */
 //! Hilo completo para staff (F11) e import puntual de historial de canal.
 //!
 //! Paginación por `sequence_num` descendente: el cursor `antes` es la secuencia
