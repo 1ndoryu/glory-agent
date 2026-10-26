@@ -12,6 +12,7 @@ pub mod buzon;
 pub mod ciclos;
 pub mod configuracion;
 pub mod eventos;
+pub mod hilo;
 pub mod sesiones;
 
 pub use buzon::{enqueue_outbox, fetch_pending_outbox, mark_outbox, valid_outbox_status};
@@ -21,6 +22,10 @@ pub use ciclos::{
 };
 pub use configuracion::{get_config, list_config, set_config};
 pub use eventos::{listar_eventos, registrar_evento, valid_evento_tipo};
+pub use hilo::{
+    importar_puntual, listar_hilo, ImportResumen, MensajeImport, PaginaHilo, HILO_DEFECTO,
+    HILO_TOPE, IMPORT_TOPE,
+};
 pub use sesiones::{
     create_session, delete_session, ensure_session, get_session, handoff, insert_message,
     insert_message_seq, insert_message_with_usage, list_messages, list_sessions, record_inbound,

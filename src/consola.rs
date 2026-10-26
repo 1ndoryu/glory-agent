@@ -15,13 +15,33 @@ use uuid::Uuid;
 use crate::{
     errors::AgentError,
     models::{AgentConfig, AgentEvento, ChatSession, ResumenUso},
-    persistence,
+    persistence::{self, ImportResumen, InboundCanal, MensajeImport, PaginaHilo},
     transport::AgentState,
 };
 
 /// Eventos por defecto en `GET /agent/admin/eventos` y tope duro (la consola no pide miles).
 const EVENTOS_DEFECTO: i64 = 50;
 const EVENTOS_TOPE: i64 = 200;
+
+#[derive(Debug, Deserialize)]
+pub struct HiloParams {
+    pub session_id: Uuid,
+    /// Cursor: `siguiente_antes` de la página anterior; sin valor, la última página.
+    pub antes: Option<i64>,
+    pub limite: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ImportarBody {
+    pub session_id: Uuid,
+    /// Staff que pide el import (va a la auditoría, nunca datos del visitante).
+    pub actor: String,
+    /// Canal de origen (`whatsapp`, ...): clave de dedup junto con `id_externo`.
+    pub canal: String,
+    pub via: Option<String>,
+    pub numero_destino_hash: Option<String>,
+    pub mensajes: Vec<MensajeImport>,
+}
 
 #[derive(Debug, Deserialize)]
 pub struct HandoffBody {
@@ -57,6 +77,8 @@ pub fn admin_routes() -> Router<AgentState> {
         .route("/agent/admin/handoff", post(handoff))
         .route("/agent/admin/eventos", get(eventos))
         .route("/agent/admin/uso", get(uso))
+        .route("/agent/admin/hilo", get(hilo))
+        .route("/agent/admin/importar", post(importar))
         .route("/agent/admin/config", get(config_listar))
         .route("/agent/admin/config/:clave", put(config_fijar))
 }
@@ -107,6 +129,45 @@ async fn uso(
     let pool = pool_de(&state)?;
     let resumen =
         persistence::resumen_uso(pool, params.session_id, params.desde, params.hasta).await?;
+    Ok(Json(resumen))
+}
+
+/// Página del hilo completo (no solo el contexto de la IA), para que el front lo muestre entero.
+async fn hilo(
+    State(state): State<AgentState>,
+    Query(params): Query<HiloParams>,
+) -> Result<Json<PaginaHilo>, AgentError> {
+    let pool = pool_de(&state)?;
+    let pagina = persistence::listar_hilo(
+        pool,
+        params.session_id,
+        params.antes,
+        params.limite.unwrap_or(persistence::HILO_DEFECTO),
+    )
+    .await?;
+    Ok(Json(pagina))
+}
+
+/// Import puntual de historial a pedido (F11). Sin IA, outbox ni handoff.
+async fn importar(
+    State(state): State<AgentState>,
+    Json(body): Json<ImportarBody>,
+) -> Result<Json<ImportResumen>, AgentError> {
+    let pool = pool_de(&state)?;
+    let plantilla = InboundCanal {
+        canal: body.canal,
+        numero_destino_hash: body.numero_destino_hash,
+        via: body.via,
+        ..InboundCanal::default()
+    };
+    let resumen = persistence::importar_puntual(
+        pool,
+        body.session_id,
+        &body.actor,
+        &plantilla,
+        &body.mensajes,
+    )
+    .await?;
     Ok(Json(resumen))
 }
 

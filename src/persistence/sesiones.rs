@@ -408,6 +408,22 @@ pub async fn record_inbound(
     sequence_num: i64,
     meta: &InboundCanal,
 ) -> Result<Option<ChatMessage>, AgentError> {
+    insertar_inbound(pool, session_id, sender, body, sequence_num, meta).await
+}
+
+/// Núcleo de `record_inbound`, genérico sobre el ejecutor: el import puntual
+/// lo corre dentro de su transacción (lote atómico con el bloqueo de sesión).
+pub(super) async fn insertar_inbound<'e, E>(
+    exec: E,
+    session_id: Uuid,
+    sender: &str,
+    body: &str,
+    sequence_num: i64,
+    meta: &InboundCanal,
+) -> Result<Option<ChatMessage>, AgentError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
     if body.trim().is_empty() || body.len() > 8000 {
         return Err(AgentError::BadRequest(
             "mensaje vacío o >8000 chars".to_string(),
@@ -431,7 +447,7 @@ pub async fn record_inbound(
         meta.media_ref,
         meta.imported
     )
-    .fetch_optional(pool)
+    .fetch_optional(exec)
     .await?;
     Ok(row)
 }
