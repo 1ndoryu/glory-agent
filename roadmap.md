@@ -24,18 +24,12 @@
   y el import puntual nativo funciona a petición; sin sync total (§10 del plan F10).
 - [ ] `19AA-3` — **Crear la herramienta local y la skill `atencion-chat` (F12).** Hecho cuando existan el AGENTS.md
   propio y la skill con enviar/leer/tomar/importar (§11 del plan F10).
-- [ ] `19AA-5` — **Resolver antes del 2026-11-12 la excepción cargo-audit RUSTSEC-2023-0071 (rsa).** Ver
-  `.cargo/audit.toml`. Hecho cuando la entrada se quite (si `sqlx-mysql` sale del lock o llega parche) o se renueve
-  con fecha nueva.
-
-- [ ] `19AA-4` — **Migración Nakomi.** Hecho externo: autorización explícita de la usuaria; sin ella no se empieza
-  (decidido 2026-10-25, antes sin fecha de revisión).
-- [ ] `19AA-6` — **E2E vivo del loop de tools contra PG.** Hecho externo: falta una instancia de prueba en el puerto 5433
-  con su `DATABASE_URL`. En la 89 solo hay PostgreSQL en 5432, sin `.env` ni `.pgpass` del proyecto (comprobado
-  2026-10-25); la usuaria provisiona la base y la credencial de prueba. Los unit cubren el executor con fake.
 
 ## Bloqueos
 
+- Bloqueo `19AA-4` — migración Nakomi. Hecho externo: autorización explícita de la usuaria (decidido 2026-10-25); sin ella no se empieza.
+- Bloqueo `19AA-6` — E2E vivo del loop de tools contra PG. Falta una instancia de prueba en el puerto 5433 con su `DATABASE_URL`: en la 89 solo hay PostgreSQL en 5432, sin `.env` ni `.pgpass` del proyecto (comprobado 2026-10-25). La usuaria provisiona la base y la credencial de prueba; los unit cubren el executor con fake.
+- **`rsa` (RUSTSEC-2023-0071): excepción en `.cargo/audit.toml` renovada hasta 2026-11-26 (decidido 2026-10-26).** Sin parche; `sqlx-mysql` sigue en el lock aunque no se compila. Al vencer: quitar la entrada si sale del lock o llega parche; si no, renovar.
 
 ## Planes activos
 

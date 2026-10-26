@@ -8,7 +8,7 @@ ignore = [
     # (glory-agent usa solo Postgres). Cargo la incluye en Cargo.lock aunque no esté activa, así que
     # cargo-audit la ve; cambiar features o subir sqlx a 0.9 no la elimina (rsa 0.10.0-rc.18 también
     # está sin parche). No hace operaciones RSA.
-    # Decidido: excepción de 1 mes (2026-10-12). VENCE 2026-11-12.
+    # Decidido: excepción de 1 mes (2026-10-12). Renovada 2026-10-26; VENCE 2026-11-26.
     # Al vencer: quitar la entrada si hay parche o sqlx-mysql sale del lock; si no, renovar con fecha nueva.
     "RUSTSEC-2023-0071",
 ]
